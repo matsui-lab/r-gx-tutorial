@@ -1,0 +1,20 @@
+---
+title: "03_se_skeleton"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+counts×metadata から `SummarizedExperiment` を構築する。
+
+```r
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(SummarizedExperiment); library(here)
+})
+counts <- read_csv(here("data","processed","airway_counts_small.csv"))
+meta   <- read_csv(here("data","processed","airway_meta_small.csv"))
+mat <- as.matrix(counts[,-ncol(counts)]); rownames(mat) <- counts$gene
+coldata <- DataFrame(row.names=meta$sample_id, group=meta$group)
+se <- SummarizedExperiment(assays=list(counts=mat), colData=coldata)
+se
+```

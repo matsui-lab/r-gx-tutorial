@@ -1,0 +1,18 @@
+---
+title: "09_wgcna_trait_preserve"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+モジュールと表現型の関連、保存性、ハブ探索の基礎。
+
+```r
+# ダミーの表現型ベクトルで相関を計算（実データでは外部コホートを用意）
+suppressPackageStartupMessages({ library(readr); library(WGCNA) })
+expr <- read_csv("data/processed/airway_counts_small.csv"); mat <- as.matrix(expr[,-ncol(expr)]); rownames(mat) <- expr$gene
+pheno <- rnorm(ncol(mat))
+ME <- moduleEigengenes(t(mat), colors = dynamicTreeCut::cutreeDynamic(hclust(dist(t(mat))), distM = NULL))$eigengenes
+cors <- cor(ME, pheno)
+cors[1:5, , drop=FALSE]
+```

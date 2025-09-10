@@ -1,0 +1,19 @@
+---
+title: "08_wgcna_modules"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+WGCNA によるモジュール検出の最小パイプライン。
+
+```r
+suppressPackageStartupMessages({ library(readr); library(WGCNA) })
+allowWGCNAThreads()
+X <- read_csv("data/processed/airway_counts_small.csv")
+mat <- as.matrix(X[,-ncol(X)]); rownames(mat) <- X$gene
+matz <- t(scale(t(log1p(mat)), center=TRUE, scale=TRUE))
+sft <- pickSoftThreshold(matz, powerVector=1:12, verbose=5)
+net <- blockwiseModules(matz, power=sft$powerEstimate %||% 6, minModuleSize=30, mergeCutHeight=0.25)
+names(table(net$colors))
+```

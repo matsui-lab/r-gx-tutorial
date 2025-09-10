@@ -1,0 +1,16 @@
+---
+title: "01_r_basics_intro"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+R言語の基本（オブジェクト/制御構文）とRMarkdownの最小実行。
+
+```r
+# ベクトル・因子・データフレームの基礎を確認
+x <- c(1,2,3)                 # 数値ベクトル
+f <- factor(c("ctrl","trt"))  # 因子
+df <- data.frame(group=c("ctrl","trt"), value=c(10,12))
+df
+```

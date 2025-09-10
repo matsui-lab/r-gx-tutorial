@@ -1,0 +1,17 @@
+---
+title: "06_gsea_ora_basics"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+pre-ranked GSEA（fgsea）と ORA（clusterProfiler）の最小実装。
+
+```r
+suppressPackageStartupMessages({ library(readr); library(dplyr); library(fgsea); library(msigdbr) })
+dge <- read_csv("results/table/dge_all.csv")
+ranks <- with(dge, sign(log2FoldChange) * -log10(pvalue)); names(ranks) <- dge$gene; ranks <- sort(ranks, decreasing=TRUE)
+h <- msigdbr(species="Homo sapiens", category="H") |> split(x=.$gene_symbol, f=.$gs_name)
+set.seed(1); fg <- fgsea(pathways=h, stats=ranks, nperm=1000)
+head(fg[order(fg$padj), 1:5])
+```

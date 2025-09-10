@@ -1,0 +1,15 @@
+---
+title: "12_capstone_bulk_sc_report"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+Bulk × sc の要約レポート。入力・QC・統計・解釈の一気通貫。
+
+- 入力データ
+- QC サマリ
+- DGE・GSEA の主要結果
+- WGCNA の所見
+- scRNA の注釈と擬似バルクの要点
+- 考察と限界

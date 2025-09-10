@@ -1,0 +1,17 @@
+---
+title: "07_gsva_samplescore"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+GSVA/ssGSEA によるサンプルレベルスコア化と群差の検定。
+
+```r
+suppressPackageStartupMessages({ library(readr); library(GSVA); library(msigdbr) })
+X <- as.matrix(readr::read_csv("data/processed/airway_counts_small.csv")[,-ncol(readr::read_csv("data/processed/airway_counts_small.csv"))])
+rownames(X) <- readr::read_csv("data/processed/airway_counts_small.csv")$gene
+h <- msigdbr(species="Homo sapiens", category="H") |> split(x=.$gene_symbol, f=.$gs_name)
+ss <- gsva(X, h, method="ssgsea")
+dim(ss)
+```

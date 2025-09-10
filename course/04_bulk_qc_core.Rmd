@@ -1,0 +1,19 @@
+---
+title: "04_bulk_qc_core"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+分布・外れ値・PCA・相関ヒートマップでQCを行う。
+
+```r
+suppressPackageStartupMessages({ library(readr); library(dplyr); library(ggplot2); library(pheatmap); library(here) })
+X <- read_csv(here("data","processed","airway_counts_small.csv"))
+mat <- as.matrix(X[,-ncol(X)]); rownames(mat) <- X$gene
+mat_log <- log1p(mat)
+pca <- prcomp(t(mat_log), scale.=TRUE)
+autoplot <- ggplot(data.frame(pca$x), aes(PC1, PC2)) + geom_point()
+ggplot2::ggsave(here("results","fig","pca.png"), autoplot, width=5, height=4)
+pheatmap(cor(mat_log), filename = here("results","fig","cor_heatmap.png"))
+```

@@ -1,0 +1,20 @@
+---
+title: "05_bulk_dge_batch"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+DGE（DESeq2）とバッチ補正（sva/ComBat）の最小実装。
+
+```r
+suppressPackageStartupMessages({ library(readr); library(dplyr); library(DESeq2); library(here) })
+cts <- read_csv(here("data","processed","airway_counts_small.csv"))
+meta <- read_csv(here("data","processed","airway_meta_small.csv"))
+mat <- as.matrix(cts[,-ncol(cts)]); rownames(mat) <- cts$gene
+dds <- DESeqDataSetFromMatrix(mat, column_to_rownames(meta, "sample_id"), design=~ group)
+dds <- dds[rowSums(counts(dds) >= 10) >= 2, ]
+dds <- DESeq(dds)
+res <- lfcShrink(dds, coef="group_treatment_vs_control", type="apeglm") |> as.data.frame() |> tibble::rownames_to_column("gene")
+readr::write_csv(res, here("results","table","dge_all.csv"))
+```

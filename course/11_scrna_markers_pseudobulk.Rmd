@@ -1,0 +1,16 @@
+---
+title: "11_scrna_markers_pseudobulk"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+マーカー検出・注釈・擬似バルク → DGE/GSEA への接続。
+
+```r
+suppressPackageStartupMessages(library(Seurat))
+# DefaultAssay(obj) <- "SCT"
+# mk <- FindAllMarkers(obj, only.pos=TRUE, min.pct=0.25, logfc.threshold=0.25)
+# pb <- AggregateExpression(obj, group.by=c("subject","seurat_clusters"), assays="RNA", slot="counts")$RNA
+# 以降は bulk DGE の手順に接続
+```

@@ -1,0 +1,20 @@
+---
+title: "10_scrna_qc_preprocess"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+scRNA-seq の QC → 正規化 → 次元圧縮 → クラスタリング。
+
+```r
+suppressPackageStartupMessages(library(Seurat))
+# 小型の 10X 例を想定（同梱する場合は data/raw/pbmc3k_small/ に配置）
+# mat <- Read10X("data/raw/pbmc3k_small")
+# obj <- CreateSeuratObject(mat, project="pbmc3k", min.cells=3, min.features=200)
+# obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern="^MT-")
+# obj <- subset(obj, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+# obj <- SCTransform(obj, verbose=FALSE)
+# obj <- RunPCA(obj) |> FindNeighbors(dims=1:20) |> FindClusters(0.5) |> RunUMAP(dims=1:20)
+# DimPlot(obj, reduction="umap", label=TRUE)
+```

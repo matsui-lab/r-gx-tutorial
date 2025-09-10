@@ -1,0 +1,16 @@
+---
+title: "02_r_basics_tidy"
+format: html
+execute: {echo: true, warning: false, message: false}
+---
+
+# 目的
+tidyverse（`dplyr`/`tidyr`）で長↔広変換と安全な join を学ぶ。
+
+```r
+suppressPackageStartupMessages(library(tidyverse))
+counts <- tibble(gene=paste0("gene",1:4), S1=c(10,0,3,1), S2=c(9,2,6,0))
+meta   <- tibble(sample=c("S1","S2"), group=c("ctrl","trt"))
+long <- counts |> pivot_longer(-gene, names_to="sample", values_to="count") |> left_join(meta, by="sample")
+long
+```
