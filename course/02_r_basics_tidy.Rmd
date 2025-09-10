@@ -1,16 +1,96 @@
 ---
 title: "02_r_basics_tidy"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義 第2回"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
-# 目的
-tidyverse（`dplyr`/`tidyr`）で長↔広変換と安全な join を学ぶ。
+# 第2回 目的
+tidyverse（dplyr/tidyr）で長↔広変換、要約、結合（join）、
+そして「安全なjoin（多対多検知）」と I/O（readr, here）の型を習得する。
 
 ```r
-suppressPackageStartupMessages(library(tidyverse))
-counts <- tibble(gene=paste0("gene",1:4), S1=c(10,0,3,1), S2=c(9,2,6,0))
-meta   <- tibble(sample=c("S1","S2"), group=c("ctrl","trt"))
-long <- counts |> pivot_longer(-gene, names_to="sample", values_to="count") |> left_join(meta, by="sample")
-long
+if (!requireNamespace("tidyverse", quietly = TRUE)) install.packages("tidyverse")
+if (!requireNamespace("here",       quietly = TRUE)) install.packages("here")
+suppressPackageStartupMessages({ library(tidyverse); library(here) })
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
+
+## 1. 長↔広変換（pivot）
+
+```r
+counts <- tibble(
+  gene = paste0("gene", 1:5),
+  S1 = c(10,  0, 3, 1,  9),
+  S2 = c(12,  2, 1, 0, 15),
+  S3 = c( 8,  5, 0, 2,  6)
+)
+meta <- tibble(
+  sample = c("S1","S2","S3"),
+  group  = c("ctrl","trt","trt"),
+  batch  = c("B1","B1","B2")
+)
+long <- counts |>
+  pivot_longer(-gene, names_to = "sample", values_to = "count") |>
+  left_join(meta, by = "sample") |>
+  mutate(logc = log1p(count))
+head(long, 8)
+```
+
+## 2. 要約と広に戻す
+
+```r
+agg <- long |>
+  group_by(gene, group) |>
+  summarise(mu_log = mean(logc), .groups = "drop")
+wide <- agg |> pivot_wider(names_from = group, values_from = mu_log)
+wide
+```
+
+## 3. 可視化
+
+```r
+p <- long |>
+  ggplot(aes(x = sample, y = logc, fill = group)) +
+  geom_boxplot() + coord_flip() +
+  labs(title = "Distribution (log1p counts) by sample")
+p
+ggplot2::ggsave(here("results","fig","02_box_by_sample.png"), p, width = 6, height = 4)
+```
+
+## 4. 安全な join（多対多検出）
+
+```r
+safe_left_join <- function(x, y, by) {
+  dup_x <- any(duplicated(x[by])); dup_y <- any(duplicated(y[by]))
+  if (dup_x || dup_y) stop("多対多の可能性：キーが一意ではありません。")
+  dplyr::left_join(x, y, by = by)
+}
+long2 <- safe_left_join(
+  x = counts |> pivot_longer(-gene, names_to="sample", values_to="count"),
+  y = meta,
+  by = c("sample" = "sample")
+)
+head(long2)
+```
+
+## 5. I/O（readr + here）
+
+```r
+readr::write_csv(wide, here("results","table","02_wide_summary.csv"))
+wide2 <- readr::read_csv(here("results","table","02_wide_summary.csv"), show_col_types = FALSE)
+identical(wide, wide2)
+```
+
+## 6. ミニ演習
+1. サンプル×群のfacet箱ひげ  
+2. site列を追加して安全join  
+3. diff=trt-ctrl を追加し上位3遺伝子抽出

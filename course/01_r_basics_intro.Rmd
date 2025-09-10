@@ -1,16 +1,115 @@
 ---
 title: "01_r_basics_intro"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義 第1回"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
-# 目的
-R言語の基本（オブジェクト/制御構文）とRMarkdownの最小実行。
+# 第1回 目的
+Rの最小構文（オブジェクト/ベクトル/因子/データフレーム）と
+R Markdown の基本、図表の保存を体験する。
 
 ```r
-# ベクトル・因子・データフレームの基礎を確認
-x <- c(1,2,3)                 # 数値ベクトル
-f <- factor(c("ctrl","trt"))  # 因子
-df <- data.frame(group=c("ctrl","trt"), value=c(10,12))
-df
+# ───────────────────────────────────────────────────────────
+# 第1回 目的：
+# Rの最小構文（オブジェクト/ベクトル/因子/データフレーム）と
+# R Markdown の基本、図表の保存を体験する。
+# ───────────────────────────────────────────────────────────
+
+# ▼ 依存の読み込み（なければ自動インストール）
+if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+if (!requireNamespace("readr",   quietly = TRUE)) install.packages("readr")
+if (!requireNamespace("here",    quietly = TRUE)) install.packages("here")
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(readr)
+  library(here)
+})
+
+# ▼ 成果物の保存先（プロジェクト相対パス）
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
+
+## 0. ウォームアップ：R Markdown の基本
+
+```r
+1 + 1
+```
+
+## 1. オブジェクトと基本型
+
+```r
+x_num <- c(1, 2, 3)
+x_chr <- c("A", "B", "C")
+x_log <- c(TRUE, FALSE, TRUE)
+x_fac <- factor(c("ctrl","trt","trt"), levels = c("ctrl","trt"))
+length(x_num); class(x_fac); levels(x_fac)
+```
+
+## 2. データフレーム操作の最小例
+
+```r
+df <- data.frame(
+  id    = 1:6,
+  group = c("A","A","A","B","B","B"),
+  value = c(10, 12, NA, 9, 11, 15)
+)
+df$ratio <- df$value / max(df$value, na.rm = TRUE)
+df[is.na(df$value), "value"] <- median(df$value, na.rm = TRUE)
+df_A <- df[df$group == "A", ]
+df; df_A
+```
+
+## 3. 関数と制御構文（if/for）
+
+```r
+mean_diff <- function(x_A, x_B) {
+  stopifnot(is.numeric(x_A), is.numeric(x_B))
+  d <- mean(x_A) - mean(x_B)
+  list(diff = d, sign = ifelse(d >= 0, "A ≥ B", "A < B"))
+}
+res <- mean_diff(df$value[df$group=="A"], df$value[df$group=="B"]); res
+
+labels <- c()
+for (g in unique(df$group)) {
+  mu <- mean(df$value[df$group==g])
+  lab <- if (mu >= 11) "high-ish" else "low-ish"
+  labels <- c(labels, paste0("group ", g, ": ", lab))
+}
+labels
+```
+
+## 4. 可視化の最小例（箱ひげ／散布）
+
+```r
+p1 <- ggplot(df, aes(x = group, y = value)) +
+  geom_boxplot() +
+  labs(title = "Toy distribution by group", x = "Group", y = "Value")
+p2 <- ggplot(df, aes(x = value, y = ratio, color = group)) +
+  geom_point(size = 2) +
+  labs(title = "Value vs. Ratio", x = "Value", y = "Scaled ratio")
+p1; p2
+ggplot2::ggsave(here("results","fig","01_boxplot.png"), p1, width = 6, height = 4)
+ggplot2::ggsave(here("results","fig","01_scatter.png"),  p2, width = 6, height = 4)
+```
+
+## 5. 表の保存（CSV）
+
+```r
+readr::write_csv(df, here("results","table","01_toy_table.csv"))
+```
+
+## 6. ミニ演習（提出不要）
+
+1. zscore 列を作る  
+2. 群平均の棒グラフ（SE付き）  
+3. mean_diff() に95%CIを追加

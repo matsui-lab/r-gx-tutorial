@@ -1,20 +1,83 @@
 ---
 title: "03_se_skeleton"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義 第3回"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
-# 目的
-counts×metadata から `SummarizedExperiment` を構築する。
+# 第3回 目的
+counts × metadata から Bioconductor の SummarizedExperiment を構築し、
+行名・列名の整合、QC（分布・PCA・相関）までを最小フローで実施する。
 
 ```r
+if (!requireNamespace("SummarizedExperiment", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install("SummarizedExperiment")
+}
+for (pkg in c("pheatmap","ggplot2","readr","dplyr","here")) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+}
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(SummarizedExperiment); library(here)
+  library(SummarizedExperiment); library(ggplot2); library(readr)
+  library(dplyr); library(pheatmap); library(here)
 })
-counts <- read_csv(here("data","processed","airway_counts_small.csv"))
-meta   <- read_csv(here("data","processed","airway_meta_small.csv"))
-mat <- as.matrix(counts[,-ncol(counts)]); rownames(mat) <- counts$gene
-coldata <- DataFrame(row.names=meta$sample_id, group=meta$group)
-se <- SummarizedExperiment(assays=list(counts=mat), colData=coldata)
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
+```
+
+## 1. 入力読み込み（事前に scripts/get_data.R を実行）
+
+```r
+cts  <- read_csv(here("data","processed","airway_counts_small.csv"), show_col_types = FALSE)
+meta <- read_csv(here("data","processed","airway_meta_small.csv"),  show_col_types = FALSE)
+
+mat <- as.matrix(cts[ , -ncol(cts)]); rownames(mat) <- cts$gene
+stopifnot(all(colnames(mat) %in% meta$sample_id))
+meta <- meta[match(colnames(mat), meta$sample_id), , drop = FALSE]
+stopifnot(identical(colnames(mat), meta$sample_id))
+```
+
+## 2. SummarizedExperiment 構築
+
+```r
+cd <- S4Vectors::DataFrame(row.names = meta$sample_id, group = meta$group)
+se <- SummarizedExperiment(assays = list(counts = mat), colData = cd)
 se
 ```
+
+## 3. QC（分布・PCA・相関）
+
+```r
+logc <- log1p(assay(se, "counts"))
+libsize <- colSums(assay(se, "counts"))
+p_ls <- qplot(x = names(libsize), y = libsize, geom = "col") +
+  labs(title = "Library size (sum of counts)", x = "sample", y = "counts")
+ggsave(here("results","fig","03_libsize.png"), p_ls, width = 7, height = 4)
+
+pca <- prcomp(t(logc), scale. = TRUE)
+df_pca <- data.frame(pca$x[,1:2], sample = colnames(logc), group = colData(se)$group)
+p <- ggplot(df_pca, aes(PC1, PC2, color = group, label = sample)) +
+  geom_point(size = 2) + geom_text(vjust = -0.8, size = 3) +
+  labs(title = "PCA on log1p(counts)")
+ggsave(here("results","fig","03_pca.png"), p, width = 6, height = 5)
+
+C <- cor(logc, method = "pearson")
+pheatmap(C, filename = here("results","fig","03_sample_correlation.png"))
+readr::write_csv(df_pca, here("results","table","03_pca_scores.csv"))
+```
+
+## 4. 保存とチェック
+```r
+saveRDS(se, file = here("data","processed","airway_small_se.rds"))
+```
+
+## 5. 宿題（Checkpoint）
+1. batch 列を追加し、色= batch, 形= group で PCA を描画  
+2. 相関ヒートマップに樹形図を表示し、外れ群を検討
