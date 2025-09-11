@@ -14,7 +14,7 @@ toc: true
 number\_sections: true
 editor\_options:
 chunk\_output\_type: inline
----------------------------
+---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
