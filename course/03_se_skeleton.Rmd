@@ -1,83 +1,288 @@
 ---
-title: "03_se_skeleton"
-author: "集中講義 第3回"
-format:
-  html:
+title: "SummarizedExperiment 徹底ガイド: なぜ・何・どう使うか"
+author: "matsui-lab"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
     toc: true
-    toc-depth: 2
-execute:
-  echo: true
-  warning: false
-  message: false
-editor: source
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+editor_options:
+  chunk_output_type: inline
 ---
 
-# 第3回 目的
-counts × metadata から Bioconductor の SummarizedExperiment を構築し、
-行名・列名の整合、QC（分布・PCA・相関）までを最小フローで実施する。
-
-```r
-if (!requireNamespace("SummarizedExperiment", quietly = TRUE)) {
-  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-  BiocManager::install("SummarizedExperiment")
-}
-for (pkg in c("pheatmap","ggplot2","readr","dplyr","here")) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
-}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 suppressPackageStartupMessages({
-  library(SummarizedExperiment); library(ggplot2); library(readr)
-  library(dplyr); library(pheatmap); library(here)
+  library(SummarizedExperiment)
 })
-dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
-dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
 
-## 1. 入力読み込み（事前に scripts/get_data.R を実行）
+# この資料のねらい
 
-```r
-cts  <- read_csv(here("data","processed","airway_counts_small.csv"), show_col_types = FALSE)
-meta <- read_csv(here("data","processed","airway_meta_small.csv"),  show_col_types = FALSE)
+- **SummarizedExperiment (SE)** が **なぜ** 必要なのかを背景から理解する。
+- **どのような構造**（`assays` / `rowData` / `colData` / `metadata`）を持つかを把握する。
+- **通常のRデータ型（data.frame / tibble / matrix / list）** と **何が同じで何が異なるか** を整理する。
+- **データ操作**（サブセット・結合・変換）と **下流解析**（差次的発現、可視化、保存/読み込み）での具体的な使い方を、**豊富な最小再現コード**で示す。
 
-mat <- as.matrix(cts[ , -ncol(cts)]); rownames(mat) <- cts$gene
-stopifnot(all(colnames(mat) %in% meta$sample_id))
-meta <- meta[match(colnames(mat), meta$sample_id), , drop = FALSE]
-stopifnot(identical(colnames(mat), meta$sample_id))
-```
+> 本資料は、**最小限の依存関係**で動かすために、自作の小さな玩具データを用いて説明します。実データに差し替える際のポイントも随所に注記します。
 
-## 2. SummarizedExperiment 構築
+# なぜ SummarizedExperiment なのか
 
-```r
-cd <- S4Vectors::DataFrame(row.names = meta$sample_id, group = meta$group)
-se <- SummarizedExperiment(assays = list(counts = mat), colData = cd)
+- オミクス解析（遺伝子発現、プロテオーム、メタボローム等）では、**数値行列（特徴×サンプル）** と、
+  - 各行（特徴・遺伝子等）に付随する **アノテーション**（例: gene symbol, length, GC含量）
+  - 各列（サンプル）に付随する **メタデータ**（例: 群、個体ID、バッチ、ライブラリサイズ）
+  - 解析に関する **メタ情報**（例: 正規化方法、フィルタ条件、バージョン）
+  が**一貫して整合**していることが極めて重要。
+- `data.frame` や `matrix` のみで管理すると、**アノテーションとのズレ**（並び替えやフィルタで崩れる）が発生しがち。
+- **SummarizedExperiment** は、
+  1. **データとアノテーションをひとつのS4オブジェクト**に束ねる
+  2. **行・列操作の一貫性**を保証する（サブセット時に付帯情報も同時に追従）
+  3. **Bioconductor エコシステム**（DESeq2, edgeR, limma, sva, etc.）との互換が高い
+  という理由で、**再現可能で安全なデータ運用**の土台になります。
+
+# 構造と用語
+
+SE の中心は次の 4 要素です。
+
+- `assays` : 1 個以上の行列（例: raw counts, normalized counts, logCPM）。**行 = 特徴（遺伝子等）**, **列 = サンプル**。
+- `rowData` : 各行に対応する表（`S4Vectors::DataFrame`）。例: gene_id, symbol, biotype。
+- `colData` : 各列に対応する表。例: group, batch, RIN, sizeFactor。
+- `metadata` : 文字列、リスト等の自由メタ情報。例: 解析パイプライン、日付、パラメータ。
+
+> 位置づけの拡張：ゲノム座標を持つ場合は `RangedSummarizedExperiment` を用い、`rowRanges` に `GRanges` を格納します。シングルセルでは `SingleCellExperiment` が SE を拡張し、低次元表現 (`reducedDims`) 等を追加します。
+
+## 最小例の作成
+
+```{r make-toy-se}
+set.seed(1)
+# 玩具データ: 100 遺伝子 × 6 サンプル
+mat_raw <- matrix(rnbinom(100*6, mu = 50, size = 1), nrow = 100, ncol = 6,
+                  dimnames = list(paste0("gene", sprintf("%03d", 1:100)),
+                                  paste0("sample", 1:6)))
+row_anno <- S4Vectors::DataFrame(
+  gene_id = rownames(mat_raw),
+  symbol  = paste0("G", 1:100),
+  biotype = sample(c("protein_coding", "lincRNA", "pseudogene"), 100, TRUE)
+)
+col_anno <- S4Vectors::DataFrame(
+  sample_id = colnames(mat_raw),
+  group     = rep(c("Ctrl", "Treat"), each = 3),
+  batch     = rep(c("A","B"), times = 3)
+)
+se <- SummarizedExperiment(
+  assays = list(counts = mat_raw),
+  rowData = row_anno,
+  colData = col_anno,
+  metadata = list(created = Sys.time(), note = "toy dataset")
+)
 se
 ```
 
-## 3. QC（分布・PCA・相関）
+## 主要アクセサ
 
-```r
-logc <- log1p(assay(se, "counts"))
+```{r accessors}
+assayNames(se)      # 利用可能なアッセイ名
+assay(se, "counts")[1:3, 1:4]  # 行列の一部
+rowData(se)[1:3,]   # 行アノテーション
+colData(se)[,]      # 列アノテーション
+metadata(se)
+```
+
+# R の基本型と何が同じで何が異なるか
+
+| 観点 | 同じ点 | 異なる点 |
+|---|---|---|
+| 行列 `matrix` | 数値行列としての演算（`rowSums` など）を `assays` 上で実施可能 | 行列だけではサンプル/遺伝子の付帯情報がつかない。SE は付帯情報と一体管理 |
+| データフレーム `data.frame`/`tibble` | `rowData`/`colData` は表形式で保持 | 本体の数値は `assays` 内。`mutate` 等を直接 `assays` に適用しない設計（必要に応じ抽出→加工→戻す）|
+| リスト `list` | `assays` は名前付きリストとして複数行列を抱える | SE は **一貫した次元** を強制（すべてのアッセイで行列次元・dimnames が一致）|
+| S3 vs S4 | メソッド分派の概念は共通 | **S4 クラス**で厳格なスロットと型検証。堅牢で壊れにくい |
+
+> 実務では、**行列演算の速さ**と**注釈の一貫性**を両立できるのが SE の強みです。
+
+# 典型的ワークフロー（操作レシピ集）
+
+## サブセット（行・列）
+
+```{r subset}
+# 遺伝子タイプで行サブセット
+se_pc <- se[rowData(se)$biotype == "protein_coding", ]
+# グループで列サブセット
+se_ctrl <- se[, colData(se)$group == "Ctrl"]
+se_pc; se_ctrl
+```
+
+**ポイント**: サブセットしても `rowData/colData/metadata` が整合したまま追従します。
+
+## アッセイの追加・変換
+
+```{r add-assay}
+# ライブラリサイズで簡易正規化（CPM ふうの比率）
 libsize <- colSums(assay(se, "counts"))
-p_ls <- qplot(x = names(libsize), y = libsize, geom = "col") +
-  labs(title = "Library size (sum of counts)", x = "sample", y = "counts")
-ggsave(here("results","fig","03_libsize.png"), p_ls, width = 7, height = 4)
-
-pca <- prcomp(t(logc), scale. = TRUE)
-df_pca <- data.frame(pca$x[,1:2], sample = colnames(logc), group = colData(se)$group)
-p <- ggplot(df_pca, aes(PC1, PC2, color = group, label = sample)) +
-  geom_point(size = 2) + geom_text(vjust = -0.8, size = 3) +
-  labs(title = "PCA on log1p(counts)")
-ggsave(here("results","fig","03_pca.png"), p, width = 6, height = 5)
-
-C <- cor(logc, method = "pearson")
-pheatmap(C, filename = here("results","fig","03_sample_correlation.png"))
-readr::write_csv(df_pca, here("results","table","03_pca_scores.csv"))
+assay(se, "cpm") <- t(t(assay(se, "counts")) / libsize * 1e6)
+assayNames(se)
 ```
 
-## 4. 保存とチェック
-```r
-saveRDS(se, file = here("data","processed","airway_small_se.rds"))
+## サンプルメタデータの加工（列側）
+
+```{r mutate-coldata}
+colData(se)$group <- factor(colData(se)$group, levels = c("Ctrl","Treat"))
+colData(se)$is_batchA <- colData(se)$batch == "A"
+colData(se)[1:3,]
 ```
 
-## 5. 宿題（Checkpoint）
-1. batch 列を追加し、色= batch, 形= group で PCA を描画  
-2. 相関ヒートマップに樹形図を表示し、外れ群を検討
+## 行メタデータの結合（行側）
+
+```{r join-rowdata}
+# 例: 別途作成した遺伝子長データを rowData にマージ
+len_tbl <- S4Vectors::DataFrame(gene_id = rownames(se), length_bp = sample(500:5000, nrow(se), TRUE))
+rowData(se) <- cbind(rowData(se), len_tbl[match(rowData(se)$gene_id, len_tbl$gene_id), "length_bp", drop=FALSE])
+rowData(se)[1:3,]
+```
+
+## フィルタリング（低発現遺伝子の除去）
+
+```{r filter-rows}
+keep <- rowMeans(assay(se, "counts") >= 5) >= 0.5
+se_filt <- se[keep, ]
+dim(se); dim(se_filt)
+```
+
+## 変換した値での可視化例
+
+```{r boxplot}
+opar <- par(mar=c(5,4,1,1))
+boxplot(log2(assay(se, "cpm") + 1), outline = FALSE, las = 2, main = "log2(CPM+1)")
+par(opar)
+```
+
+# 下流解析での使い方（連携の型）
+
+> ここでは **“SE を起点に下流パッケージへ渡す”** という観点で、最小限の骨格を示します（詳細な統計は各パッケージに委ねます）。
+
+## limma-voom への受け渡し（骨格）
+
+```{r limma-voom, eval=FALSE}
+# BiocManager::install(c("limma","edgeR"))
+library(limma); library(edgeR)
+y <- DGEList(counts = assay(se, "counts"))
+y <- calcNormFactors(y)
+design <- model.matrix(~ group, data = as.data.frame(colData(se)))
+vo <- voom(y, design)
+fit <- lmFit(vo, design) |> eBayes()
+# topTable(fit, coef = "groupTreat")
+```
+
+## DESeq2 への受け渡し（骨格）
+
+```{r deseq2, eval=FALSE}
+# BiocManager::install("DESeq2")
+library(DESeq2)
+dds <- DESeqDataSet(se, design = ~ group)     # 直接 SE から作れる
+dds <- DESeq(dds)
+res <- results(dds, name = "group_Treat_vs_Ctrl")
+# as.data.frame(res) |> head()
+```
+
+## sva/Combat によるバッチ補正（骨格）
+
+```{r sva, eval=FALSE}
+# BiocManager::install("sva")
+library(sva)
+expr <- log2(assay(se, "cpm") + 1)
+batch <- colData(se)$batch
+mod <- model.matrix(~ group, data = as.data.frame(colData(se)))
+expr_bc <- ComBat(dat = expr, batch = batch, mod = mod, par.prior = TRUE)
+assay(se, "cpm_bc") <- expr_bc
+```
+
+# よくある落とし穴 & ベストプラクティス
+
+- **行名・列名の一貫性**：`assays` の全行列で **行名・列名と次元が一致**していないとエラー。追加前に `all.equal(rownames(a1), rownames(a2))` を確認。
+- **因子レベル**：`colData` の群変数は、**解析前に `factor` 化**し順序を明示（基準レベルが結果解釈に影響）。
+- **正規化の二重適用**：アッセイを増やす際は、**何が raw / normalized** か命名で区別（例: `counts`, `cpm`, `logCPM`, `vst`）。
+- **外部結合**：行側・列側の結合は **必ずキーの整合**を確認（`match` / `inner_join` 相当）。
+- **保存・読み込み**：RDS で丸ごと保存すると再現性が高い。大規模なら `HDF5Array` を検討。
+
+## 保存と読み込み
+
+```{r save-load, eval=FALSE}
+# 保存
+saveRDS(se, file = "se_toy.rds")
+# 復元
+se2 <- readRDS("se_toy.rds")
+identical(dim(se), dim(se2))
+```
+
+# もう一歩進んだ話題
+
+- **RangedSummarizedExperiment**：`rowRanges` にゲノム座標 (`GRanges`) を保持し、レンジベースの操作（オーバーラップ等）が簡便。
+- **HDF5Array / DelayedArray**：巨大行列をオンディスクで扱い、SE の `assays` として接続可能。メモリ節約・スケール向上。
+- **SingleCellExperiment**：SE の拡張。`reducedDims`（PCA/UMAP）、`sizeFactors`、`altExps` など、単一細胞用のスロットを追加。
+- **altExp**：同じ細胞の別アッセイ（spike-in 等）をサブ SE として格納。
+
+# 事例集（レシピ）
+
+## 事例 1: ライブラリサイズ補正後に群比較の準備
+
+```{r case1}
+# 低発現フィルタ→CPM→log2 まで
+keep <- rowSums(assay(se, "counts") >= 10) >= 3
+se1 <- se[keep,]
+lib <- colSums(assay(se1, "counts"))
+assay(se1, "log2cpm") <- log2(t(t(assay(se1, "counts"))/lib*1e6) + 1)
+# デザイン行列の作成
+X <- model.matrix(~ group + batch, data = as.data.frame(colData(se1)))
+head(X)
+```
+
+## 事例 2: 列の並び替えと一括可視化
+
+```{r case2}
+ord <- order(colData(se)$group, colData(se)$batch)
+se_ord <- se[, ord]
+opar <- par(mar=c(5,4,1,1))
+boxplot(log2(assay(se_ord, "cpm") + 1), las = 2, outline = FALSE,
+        main = "Ordered by group/batch")
+par(opar)
+```
+
+## 事例 3: 別アッセイ（正規化済み）を追加して切替解析
+
+```{r case3}
+assay(se, "log2cpm") <- log2(assay(se, "cpm") + 1)
+# アッセイの切替（下流関数にどれを渡すかを選ぶだけ）
+current <- "log2cpm"
+mat <- assay(se, current)
+summary(as.vector(mat))
+```
+
+# チェックリスト（実データへ差し替えるとき）
+
+- [ ] 行名 = **ユニークな特徴ID**（例: `gene_id`）。記号や重複に注意。
+- [ ] 列名 = **ユニークなサンプルID**（例: `SRR…`/`sample…`）。
+- [ ] `rowData` / `colData` の **キー列** が揃っているか。
+- [ ] **欠損値・外れ値** の取り扱い方針（除外/補完）を明示。
+- [ ] **バージョン・正規化法** を `metadata` に記録（将来の再解析のため）。
+
+# 付録: よく使う関数早見
+
+```{r cheatsheet}
+# 主要アクセサ
+assay(se); assays(se); assayNames(se)
+rowData(se); colData(se); metadata(se)
+# サブセット
+se[1:10, 1:3]; se[rowData(se)$biotype=="protein_coding", ]
+# アッセイの追加
+assay(se, "new") <- assay(se, "counts")
+# 行列演算
+rs <- rowSums(assay(se, "counts")); cs <- colSums(assay(se, "counts"))
+# 保存/読み込み
+# saveRDS(se, "se.rds"); se <- readRDS("se.rds")
+```
+
+> **まとめ**: SummarizedExperiment は、**データ本体と注釈の一貫性を保証**し、**安全な前処理→下流解析**を実現するための基盤クラスです。`assays/rowData/colData/metadata` を正しく使い分け、解析履歴をオブジェクトに刻み込むことで、**再現性**と**拡張性**が一気に向上します。
