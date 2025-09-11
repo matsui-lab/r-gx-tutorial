@@ -1,20 +1,85 @@
 ---
 title: "05_bulk_dge_batch"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
 # 目的
-DGE（DESeq2）とバッチ補正（sva/ComBat）の最小実装。
+**差次発現解析（DGE）**を `DESeq2` で実施し、効果量重視の抽出と可視化（MA/Volcano）を行います。必要に応じて**バッチの取り扱い**（`sva` / `ComBat` / 設計式）も最小例で触れます。
 
+> 入力想定：回04のQC後データ（`airway_counts_small.csv` / `airway_meta_small.csv`）。
+
+## 0. セットアップ
 ```r
-suppressPackageStartupMessages({ library(readr); library(dplyr); library(DESeq2); library(here) })
-cts <- read_csv(here("data","processed","airway_counts_small.csv"))
-meta <- read_csv(here("data","processed","airway_meta_small.csv"))
-mat <- as.matrix(cts[,-ncol(cts)]); rownames(mat) <- cts$gene
-dds <- DESeqDataSetFromMatrix(mat, column_to_rownames(meta, "sample_id"), design=~ group)
-dds <- dds[rowSums(counts(dds) >= 10) >= 2, ]
-dds <- DESeq(dds)
-res <- lfcShrink(dds, coef="group_treatment_vs_control", type="apeglm") |> as.data.frame() |> tibble::rownames_to_column("gene")
-readr::write_csv(res, here("results","table","dge_all.csv"))
+need <- c("readr","dplyr","DESeq2","EnhancedVolcano","here")
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+for (pkg in need) if (!requireNamespace(pkg, quietly = TRUE)) BiocManager::install(pkg)
+suppressPackageStartupMessages({ library(readr); library(dplyr); library(DESeq2); library(EnhancedVolcano); library(here) })
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
+
+## 1. データ読み込みと整形
+```r
+cts  <- readr::read_csv(here("data","processed","airway_counts_small.csv"), show_col_types = FALSE)
+meta <- readr::read_csv(here("data","processed","airway_meta_small.csv"),  show_col_types = FALSE)
+
+mat <- as.matrix(cts[ , -ncol(cts)]); rownames(mat) <- cts$gene
+stopifnot(all(colnames(mat) %in% meta$sample_id))
+meta <- meta[match(colnames(mat), meta$sample_id), , drop = FALSE]
+stopifnot(identical(colnames(mat), meta$sample_id))
+
+# 参照レベルを control に
+meta$group <- factor(meta$group, levels = c("control","treatment"))
+```
+
+## 2. DESeq2 による DGE（最小実装）
+```r
+dds <- DESeqDataSetFromMatrix(countData = mat, colData = meta, design = ~ group)
+dds <- dds[rowSums(counts(dds) >= 10) >= 2, ]  # 低発現フィルタ
+dds <- DESeq(dds)
+
+# 対比：treatment vs control
+res <- lfcShrink(dds, coef = "group_treatment_vs_control", type = "apeglm") |>
+  as.data.frame() |>
+  tibble::rownames_to_column("gene")
+
+# 抽出（効果量・多重検定）
+sig <- res |>
+  dplyr::filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) >= 1)
+
+readr::write_csv(res, here("results","table","05_dge_all.csv"))
+readr::write_csv(sig, here("results","table","05_dge_sig.csv"))
+```
+
+## 3. 可視化（MA / Volcano）
+```r
+p_vol <- EnhancedVolcano(res,
+  lab = res$gene, x = "log2FoldChange", y = "padj",
+  pCutoff = 0.05, FCcutoff = 1
+)
+p_vol
+ggplot2::ggsave(here("results","fig","05_volcano.png"), p_vol, width=6, height=5)
+```
+
+## 4. バッチ・交絡（必要時）
+```r
+# 例（meta に 'batch' がある場合）:
+# dds2 <- DESeqDataSetFromMatrix(mat, meta, design = ~ batch + group)
+# dds2 <- DESeq(dds2)
+# res2 <- lfcShrink(dds2, coef = "group_treatment_vs_control", type = "apeglm")
+# → バッチが有意なら設計式への明示的な導入を検討
+```
+
+## 5. まとめ（提出）
+- `05_dge_all.csv` / `05_dge_sig.csv` を出力。  
+- 図：`05_volcano.png`。  
+- ノート：低発現フィルタや batch の扱い、係数（`coef`）の意味を記録。

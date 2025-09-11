@@ -1,19 +1,91 @@
 ---
 title: "04_bulk_qc_core"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
 # 目的
-分布・外れ値・PCA・相関ヒートマップでQCを行う。
+本回では、**バルクRNA-seq のQC**（分布・外れ値・PCA・サンプル間相関）を最小構成で実施します。  
+以後の差次発現解析（回05）・遺伝子セット解析（回06）へ安全に接続できるよう、**行名/列名の整合とログ変換**を丁寧に確認します。
 
+> 入力想定：`data/processed/airway_counts_small.csv` と `airway_meta_small.csv`（6サンプル×約500遺伝子）。
+
+## 0. セットアップ
 ```r
-suppressPackageStartupMessages({ library(readr); library(dplyr); library(ggplot2); library(pheatmap); library(here) })
-X <- read_csv(here("data","processed","airway_counts_small.csv"))
-mat <- as.matrix(X[,-ncol(X)]); rownames(mat) <- X$gene
-mat_log <- log1p(mat)
-pca <- prcomp(t(mat_log), scale.=TRUE)
-autoplot <- ggplot(data.frame(pca$x), aes(PC1, PC2)) + geom_point()
-ggplot2::ggsave(here("results","fig","pca.png"), autoplot, width=5, height=4)
-pheatmap(cor(mat_log), filename = here("results","fig","cor_heatmap.png"))
+need <- c("readr","dplyr","ggplot2","pheatmap","here","tibble","tidyr")
+for (pkg in need) if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(ggplot2); library(pheatmap)
+  library(here);  library(tibble); library(tidyr)
+})
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
+```
+
+## 1. 入力と整形（**最重要：整合の保証**）
+```r
+cts  <- read_csv(here("data","processed","airway_counts_small.csv"), show_col_types = FALSE)
+meta <- read_csv(here("data","processed","airway_meta_small.csv"),  show_col_types = FALSE)
+
+mat <- as.matrix(cts[ , -ncol(cts)])     # 末尾 'gene' を除く
+rownames(mat) <- cts$gene
+stopifnot(all(colnames(mat) %in% meta$sample_id))
+meta <- meta[match(colnames(mat), meta$sample_id), , drop = FALSE]
+stopifnot(identical(colnames(mat), meta$sample_id))
+
+# 低発現の簡易フィルタ（例：>=10 を少なくとも2サンプル）
+keep <- rowSums(mat >= 10) >= 2
+mat_f <- mat[keep, ]
+
+# log1p でゼロ回避＋スケール圧縮
+logc <- log1p(mat_f)
+```
+
+## 2. 分布と外れ値の初期スクリーニング
+```r
+df_long <- as.data.frame(logc) |>
+  tibble::rownames_to_column("gene") |>
+  tidyr::pivot_longer(-gene, names_to = "sample", values_to = "logc")
+
+p_box <- ggplot(df_long, aes(sample, logc)) +
+  geom_boxplot() + coord_flip() +
+  labs(title = "log1p(counts) by sample")
+p_box
+ggplot2::ggsave(here("results","fig","04_box_by_sample.png"), p_box, width=7, height=5)
+```
+
+## 3. PCA（群分離・外れ候補の把握）
+```r
+pca <- prcomp(t(logc), scale. = TRUE)
+pca_df <- data.frame(pca$x[,1:2], sample = colnames(logc))
+p_pca <- ggplot(pca_df, aes(PC1, PC2, label = sample)) + geom_point(size=2) + geom_text(vjust=-0.7) +
+  labs(title="PCA on log1p(counts)")
+p_pca
+ggplot2::ggsave(here("results","fig","04_pca.png"), p_pca, width=6, height=5)
+
+# PCA スコアを保存（回05/06で参照可）
+readr::write_csv(pca_df, here("results","table","04_pca_scores.csv"))
+```
+
+## 4. サンプル間相関（技術外れの検出）
+```r
+C <- cor(logc, method = "pearson")
+pheatmap(C, filename = here("results","fig","04_sample_correlation.png"))
+```
+
+## 5. チェックリスト（提出用）
+- [ ] 列名（サンプル）と `meta$sample_id` は完全一致している。  
+- [ ] フィルタ後の遺伝子数・ライブラリサイズを記録した。  
+- [ ] PCA と相関で外れ候補のメモを残した（技術 or 生物学）。
+```r
+libsize <- colSums(mat_f)
+readr::write_csv(data.frame(sample = names(libsize), libsize), here("results","table","04_libsize.csv"))
 ```

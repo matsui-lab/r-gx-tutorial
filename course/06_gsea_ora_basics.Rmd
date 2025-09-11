@@ -1,17 +1,74 @@
 ---
 title: "06_gsea_ora_basics"
-format: html
-execute: {echo: true, warning: false, message: false}
+author: "集中講義"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
 ---
 
 # 目的
-pre-ranked GSEA（fgsea）と ORA（clusterProfiler）の最小実装。
+**遺伝子セット解析（GSEA/ORA）**の原理と実装を最小構成で学びます。回05で得た DGE 結果に対し、pre-ranked GSEA（`fgsea`）と ORA（`clusterProfiler`）を適用します。
 
+> 入力想定：`results/table/05_dge_all.csv`。
+
+## 0. セットアップ
 ```r
-suppressPackageStartupMessages({ library(readr); library(dplyr); library(fgsea); library(msigdbr) })
-dge <- read_csv("results/table/dge_all.csv")
-ranks <- with(dge, sign(log2FoldChange) * -log10(pvalue)); names(ranks) <- dge$gene; ranks <- sort(ranks, decreasing=TRUE)
-h <- msigdbr(species="Homo sapiens", category="H") |> split(x=.$gene_symbol, f=.$gs_name)
-set.seed(1); fg <- fgsea(pathways=h, stats=ranks, nperm=1000)
-head(fg[order(fg$padj), 1:5])
+need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here")
+for (pkg in need) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+}
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(fgsea); library(msigdbr); library(clusterProfiler); library(here)
+})
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
+
+## 1. pre-ranked GSEA（fgsea）
+```r
+dge <- readr::read_csv(here("results","table","05_dge_all.csv"), show_col_types = FALSE)
+
+# ランク統計量（例：符号付き -log10(p) × 効果量）
+rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
+ranks <- rank_stat; names(ranks) <- dge$gene
+ranks <- sort(ranks, decreasing = TRUE)
+
+# 経路定義：MSigDB Hallmark（ヒト）
+h <- msigdbr(species = "Homo sapiens", category = "H") |>
+  split(x = .$gene_symbol, f = .$gs_name)
+
+set.seed(1)
+fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
+  arrange(padj)
+
+readr::write_csv(fg, here("results","table","06_fgsea_hallmark.csv"))
+```
+
+### 1.1 可視化（代表経路）
+```r
+# 例：IFN-γ 応答
+plt <- fgsea::plotEnrichment(h[["HALLMARK_INTERFERON_GAMMA_RESPONSE"]], ranks)
+ggplot2::ggsave(here("results","fig","06_fgsea_ifng.png"), plt, width=6, height=4)
+```
+
+## 2. ORA（clusterProfiler）最小例
+```r
+# 上位/下位遺伝子のシグネチャを作り、富化（GO/KEGG 等）を実施する例（ダミー）
+# library(org.Hs.eg.db)
+# up  <- dge |>
+#   filter(padj < 0.05, log2FoldChange >  1) |>
+#   pull(gene)
+# ego_up <- enrichGO(up, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP", readable = TRUE)
+# dotplot(ego_up)
+```
+
+## 3. まとめ（提出）
+- `06_fgsea_hallmark.csv` を提出。  
+- 図：`06_fgsea_ifng.png`。  
+- ノート：**ランク統計量の定義**・**母集団の取り方**・**多重検定**を明記。
