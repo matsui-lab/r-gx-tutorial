@@ -1,19 +1,18 @@
 ---
-
 title: "Bulk RNA-seq QC 実践ガイド：指標・手順・解釈・下流反映"
 author: "matsui-lab"
 date: "`r format(Sys.Date())`"
 output:
-html\_document:
-toc: true
-toc\_depth: 3
-toc\_float: true
-number\_sections: true
-pdf\_document:
-toc: true
-number\_sections: true
-editor\_options:
-chunk\_output\_type: inline
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+editor_options:
+  chunk_output_type: inline
 ---
 
 ```{r setup, include=FALSE}
@@ -26,26 +25,22 @@ set.seed(1)
 ```
 
 # ねらい
-
-* **QC とは何か／なぜ必要か**を整理する。
-* **前処理 → アライン／定量 → カウント表**までの段階ごとに QC 指標を列挙し、**実践フロー**を示す。
-* **解釈／しきい値の考え方**（万能の絶対値はない、分布と文脈で判断）。
-* **下流解析への反映**（サンプル除外・共変量化・正規化・バッチ補正・重み付け）。
-* **最小再現コード**と**テンプレ設計**を提供（実データ差し替え容易）。
+- **QC とは何か／なぜ必要か**を整理する。
+- **前処理 → アライン／定量 → カウント表**までの段階ごとに QC 指標を列挙し、**実践フロー**を示す。
+- **解釈／しきい値の考え方**（万能の絶対値はない、分布と文脈で判断）。
+- **下流解析への反映**（サンプル除外・共変量化・正規化・バッチ補正・重み付け）。
+- **最小再現コード**と**テンプレ設計**を提供（実データ差し替え容易）。
 
 > 本Rmdは **カウント表（遺伝子×サンプル）** と **`colData` サンプルメタ**がある前提で、**最終QC（count-level）** を中心に扱います。**read-level** の FastQC/MultiQC などは要点とチェック項目をまとめ、R内で参照・集約する雛形を付録に示します。
 
 # QC とは何か／なぜ必要か
-
 **Quality Control (QC)** は、測定・処理の各段階でデータの**健全性・一貫性・妥当性**を検証し、
-
-* **故障・人為ミス・系統誤差**の早期検知
-* **除外基準**の設定（外れ試料）
-* **統計モデルへの反映**（共変量・ブロック・重み）
-  を行う作業です。QCは**除外するため**だけではなく、**説明変数として取り込む**ことで**推定のバイアスと分散**を改善します。
+- **故障・人為ミス・系統誤差**の早期検知
+- **除外基準**の設定（外れ試料）
+- **統計モデルへの反映**（共変量・ブロック・重み）
+を行う作業です。QCは**除外するため**だけではなく、**説明変数として取り込む**ことで**推定のバイアスと分散**を改善します。
 
 # 段階別のQC全体像
-
 1. **Read-level（前処理前）**: FastQC → base quality, adapter, GC, duplication, overrepresented seq
 2. **Alignment/Quantification-level**: STAR/HISAT2/salmon 等のログ → mapping rate, unique rate, multimapping, rRNA率, intragenic/intergenic
 3. **Count-level（本Rmdの中心）**: ライブラリサイズ、検出遺伝子数、発現分布、ミトコンドリア遺伝子率、サンプル内相関、群内分散、バッチ指標、PCA/UMAP、クラスタリング、アウトライヤ検出
@@ -53,7 +48,6 @@ set.seed(1)
 > 重要：**1→2→3** の順に **早期に問題源を特定**し、必要なら**再実験／再ライブラリ**を検討します。count-levelだけでの対症療法は限界がある点に注意。
 
 # デモ用データの用意（玩具）
-
 ```{r demo-data}
 # 1000 gene × 12 sample のラフな玩具データ
 G <- 1000; N <- 12
@@ -75,7 +69,6 @@ se
 # Count-level QC 指標とプロット
 
 ## ライブラリサイズ（総リード数）と検出遺伝子数
-
 ```{r libsize-detected}
 libsize <- colSums(assay(se, "counts"))
 detected <- colSums(assay(se, "counts") > 0)
@@ -88,26 +81,20 @@ plot(libsize, detected, pch = 16, main = "Detected genes vs Library size"); abli
 par(op)
 summary(libsize); summary(detected)
 ```
-
 **解釈**：
-
-* **極端に小さいライブラリ**や**検出遺伝子が著しく少ない**サンプルは要注意（抽出失敗／過剰なフィルタ／定量異常）。
-* しきい値は**相対的**に（箱ひげの外・分布の裾）。**群・バッチで分けて比較**するのが実践的。
+- **極端に小さいライブラリ**や**検出遺伝子が著しく少ない**サンプルは要注意（抽出失敗／過剰なフィルタ／定量異常）。
+- しきい値は**相対的**に（箱ひげの外・分布の裾）。**群・バッチで分けて比較**するのが実践的。
 
 ## ミトコンドリア（mt）率／rRNA率（代理）
-
 ```{r mito-rate}
 mt_rate <- colSums(assay(se, "counts")[rowData(se)$is_mito, , drop=FALSE]) / libsize
 boxplot(mt_rate ~ colData(se)$group, las = 2, main = "Mitochondrial fraction")
 summary(mt_rate)
 ```
-
 **解釈**：
-
-* 高 mt 率は RNA 断片化・ストレス・組織由来差などを反映。bulk では**一律の閾値**は難しく、**群間で偏り**がないかを見る。
+- 高 mt 率は RNA 断片化・ストレス・組織由来差などを反映。bulk では**一律の閾値**は難しく、**群間で偏り**がないかを見る。
 
 ## サンプル間相関・クラスタリング・PCA
-
 ```{r pca-corr}
 logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
 # 相関ヒートマップ用の距離（簡便版）
@@ -123,15 +110,12 @@ plot(pc$x[,1], pc$x[,2], pch=19,
      main="PCA of log2(CPM+1)")
 text(pc$x[,1], pc$x[,2], labels = colnames(se), pos = 3, cex = 0.8)
 ```
-
 **解釈**：
-
-* **群が第一主成分で分離**していれば理想。
-* **バッチや実験日**が主軸を支配していれば、**共変量化 or 補正**を検討。
-* 明確な**孤立点**は原データ（ログ・実験ノート）に立ち返り、**除外**も選択肢。
+- **群が第一主成分で分離**していれば理想。
+- **バッチや実験日**が主軸を支配していれば、**共変量化 or 補正**を検討。
+- 明確な**孤立点**は原データ（ログ・実験ノート）に立ち返り、**除外**も選択肢。
 
 ## バッチの影響の可視化
-
 ```{r pca-by-batch}
 # 便宜的な可視化（色=group, 形=batch）
 plot(pc$x[,1], pc$x[,2], pch = ifelse(colData(se)$batch=="A", 16, 17),
@@ -141,14 +125,11 @@ points(pc$x[,1], pc$x[,2], col=cols, pch=ifelse(colData(se)$batch=="A", 1, 2), c
 legend("topright", legend=c("Ctrl","Treat","batchA","batchB"),
        col=c("black","red","black","black"), pch=c(19,19,1,2))
 ```
-
 **解釈**：
-
-* 形状（バッチ）で分かれ、色（群）が混じる → **バッチ支配**の可能性。
-* 一方、色で分かれ、形が混ざっていれば **群効果が主**。
+- 形状（バッチ）で分かれ、色（群）が混じる → **バッチ支配**の可能性。
+- 一方、色で分かれ、形が混ざっていれば **群効果が主**。
 
 ## 雑音の高いサンプルの特定（leave-one-out 影響度）
-
 ```{r loo-influence}
 # 各サンプルを一時的に除いてPC1分散がどれくらい変わるかの簡易スコア
 pc_full <- prcomp(t(logcpm))
@@ -159,33 +140,27 @@ score <- sapply(1:ncol(logcpm), function(j){
 })
 barplot(score, las=2, main="Influence on PC1 variance (leave-one-out)")
 ```
-
 **解釈**：
-
-* スコアが極端に負（除くと分散が増える）なら、そのサンプルが**構造を曖昧にしている**可能性。
+- スコアが極端に負（除くと分散が増える）なら、そのサンプルが**構造を曖昧にしている**可能性。
 
 # 実践フロー（count-level 以降）
 
 1. **基礎QC**：`libsize / detected / mt率 / PCA` を**群・バッチ別**に確認
 2. **外れ候補の一次抽出**：
-
-   * 著しく小さいライブラリ、極端mt率、クラスタ外れ
-   * ログやMultiQCの**上流ログ**と突合（機械/担当/日付）
+   - 著しく小さいライブラリ、極端mt率、クラスタ外れ
+   - ログやMultiQCの**上流ログ**と突合（機械/担当/日付）
 3. **決定**：
-
-   * **除外**（明確な失敗）
-   * **共変量として保持**（バッチ、RIN、ライブラリサイズのオフセット 等）
-   * **補正**（Combat/SVA, removeBatchEffect など）
+   - **除外**（明確な失敗）
+   - **共変量として保持**（バッチ、RIN、ライブラリサイズのオフセット 等）
+   - **補正**（Combat/SVA, removeBatchEffect など）
 4. **設計式へ反映**：
-
-   * 例：`~ batch + RIN + group`（群効果が主目的）
-   * DESeq2 のサイズ因子、edgeR のオフセットで**ライブラリ規模**はモデル化
+   - 例：`~ batch + RIN + group`（群効果が主目的）
+   - DESeq2 のサイズ因子、edgeR のオフセットで**ライブラリ規模**はモデル化
 5. **再QC**：補正後に PCA/ヒートマップを再確認（過補正に注意）
 
 # 下流解析への反映（コード骨格）
 
 ## DESeq2（設計式でQC指標を共変量化）
-
 ```{r deseq2, eval=FALSE}
 # BiocManager::install("DESeq2")
 library(DESeq2)
@@ -200,7 +175,6 @@ res <- lfcShrink(dds, coef = "group_Treat_vs_Ctrl", type = "apeglm")
 ```
 
 ## limma-voom + removeBatchEffect
-
 ```{r limma-voom, eval=FALSE}
 # BiocManager::install(c("limma","edgeR"))
 library(edgeR); library(limma)
@@ -215,7 +189,6 @@ plot(prcomp(t(expr_adj))$x[,1:2], main = "PCA after batch/RIN adjustment")
 ```
 
 ## sva/Combat（バッチ補正）
-
 ```{r sva, eval=FALSE}
 # BiocManager::install("sva")
 library(sva)
@@ -226,17 +199,15 @@ expr_bc <- ComBat(dat = logcpm, batch = colData(se)$batch, mod = mod, par.prior 
 ```
 
 # しきい値・判断の指針（実務的メモ）
-
-* **しきい値は相対・分布基準**：箱ひげ外・MAD>3 等。群・バッチを分けて相対比較。
-* **外れ＝即除外ではない**：**一貫して異常**（MT率極端 + ライブラリ極小 + クラスタ外れ）であれば除外寄り。
-* **説明変数としてのQC**：RIN/バッチ/担当/日付/ライブラリ調製キットなどは**設計式に入れる**。
-* **過補正に注意**：群効果まで打ち消さないよう、**設計式 or 可視化で確認**。
-* **再現性**：決定基準を `metadata(se)$qc_decision` に**文字列で記録**する。
+- **しきい値は相対・分布基準**：箱ひげ外・MAD>3 等。群・バッチを分けて相対比較。
+- **外れ＝即除外ではない**：**一貫して異常**（MT率極端 + ライブラリ極小 + クラスタ外れ）であれば除外寄り。
+- **説明変数としてのQC**：RIN/バッチ/担当/日付/ライブラリ調製キットなどは**設計式に入れる**。
+- **過補正に注意**：群効果まで打ち消さないよう、**設計式 or 可視化で確認**。
+- **再現性**：決定基準を `metadata(se)$qc_decision` に**文字列で記録**する。
 
 # 事例集（テンプレ）
 
 ## 事例1：外れ1サンプルを除外して再解析
-
 ```{r case1}
 # 仮に最小ライブラリの1試料を除外
 j_out <- which.min(libsize)
@@ -245,31 +216,26 @@ se1 <- se[, -j_out]
 logcpm1 <- log2(t(t(assay(se1, "counts"))/colSums(assay(se1, "counts"))*1e6) + 1)
 plot(prcomp(t(logcpm1))$x[,1:2], main = sprintf("PCA after dropping %s", colnames(se)[j_out]))
 ```
-
 **示唆**：除外で群分離が改善・安定するなら、**除外判断の妥当性**の一助。
 
 ## 事例2：RIN を連続共変量に入れる
-
 ```{r case2, eval=FALSE}
 # DESeq2 例：design = ~ batch + RIN + group
 # RIN係数の符号・有意性も確認し、品質の影響を定量化
 ```
 
 ## 事例3：バッチ補正後の差次的発現
-
 ```{r case3, eval=FALSE}
 # limma-voom + removeBatchEffect を用い、可視化は補正後、推定は設計式ベースで整合
 ```
 
 # 上流（read-/align-level）QC チェックリスト（要点）
-
-* **FastQC/MultiQC**：per-base quality（3' 低下の度合い）、adapter contamination、duplication、overrepresented sequences、GC分布
-* **アラインログ**：総リード・マッピング率・ユニーク率・マルチマップ率・rRNA/mt 割合・intragenic/intergenic・5'/3' coverage bias
-* **設計との整合**：群・バッチの入れ子（confounding）を避けたサンプリング計画になっているか
-* **メタ情報**：抽出キット、ライブラリ調製法、担当者、装置、ラン日付は `colData` に入れておく
+- **FastQC/MultiQC**：per-base quality（3' 低下の度合い）、adapter contamination、duplication、overrepresented sequences、GC分布
+- **アラインログ**：総リード・マッピング率・ユニーク率・マルチマップ率・rRNA/mt 割合・intragenic/intergenic・5'/3' coverage bias
+- **設計との整合**：群・バッチの入れ子（confounding）を避けたサンプリング計画になっているか
+- **メタ情報**：抽出キット、ライブラリ調製法、担当者、装置、ラン日付は `colData` に入れておく
 
 ## MultiQC 結果の R への取り込み（雛形）
-
 ```{r multiqc, eval=FALSE}
 # MultiQC の aggregated report（tsv/json）を読み込み、sample_idで colData と join
 multiqc <- read.csv("multiqc_general_stats.txt", sep="\t")
@@ -277,29 +243,143 @@ multiqc <- read.csv("multiqc_general_stats.txt", sep="\t")
 ```
 
 # 最低限の運用約束（ラボ標準）
+- **解析開始前にQC項目と決定基準のドラフト**を合意（例：外れ候補の自動フラグ → 最終は人が判断）。
+- **QCの痕跡を残す**：`metadata(se)$qc_metrics` にリストで指標・図のパス・決定理由を保存。
+- **版管理**：QC後の SE を `saveRDS()` し、ファイル名に日付・決定を含める。
 
-* **解析開始前にQC項目と決定基準のドラフト**を合意（例：外れ候補の自動フラグ → 最終は人が判断）。
-* **QCの痕跡を残す**：`metadata(se)$qc_metrics` にリストで指標・図のパス・決定理由を保存。
-* **版管理**：QC後の SE を `saveRDS()` し、ファイル名に日付・決定を含める。
+# 実データに合わせた**自動フラグ**（しきい値の自動判定)
 
-# 付録：関数スニペット集
+本節では、実データ（例：**airway** パッケージ）や自前のカウント表に合わせ、**分布ベース**でしきい値を自動設定し、
+サンプルごとの **flag** 列を `colData` に追加します。しきい値は**固定値ではなく分位点**等から決めるのが実務的です。
 
-```{r helpers}
-qc_lib_detect <- function(se){
-  libsize <- colSums(assay(se, "counts"))
-  detected <- colSums(assay(se, "counts")>0)
-  data.frame(sample=colnames(se), libsize, detected)
-}
-qc_mt_fraction <- function(se, flag="is_mito"){
-  stopifnot(!is.null(rowData(se)[[flag]]))
+## 例：airway データでの自動フラグ
+```{r airway-autoflag, eval=FALSE}
+# 初回のみ
+# if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager")
+# BiocManager::install(c("airway","SummarizedExperiment"))
+
+library(airway); library(SummarizedExperiment)
+data("airway")
+# airway: RangedSummarizedExperiment（countアッセイに raw counts）
+se_air <- airway
+assayNames(se_air) <- sub("counts", "counts", assayNames(se_air))
+# 便宜上、mtフラグがないのでダミーを付与（実戦では注釈テーブルをjoin）
+rowData(se_air)$is_mito <- grepl("^MT-", rownames(se_air))
+
+# しきい値＝分位点ベース（下位5%など）で自動算出
+qc_autoflag <- function(se,
+                        q_lib=0.05, q_detect=0.05, q_corr=0.05,
+                        mt_upper_q=0.95, min_detect_abs=NA){
+  # ライブラリサイズ・検出遺伝子
   lib <- colSums(assay(se, "counts"))
-  mt <- colSums(assay(se, "counts")[rowData(se)[[flag]], , drop=FALSE])
-  mt/lib
+  det <- colSums(assay(se, "counts")>0)
+  # mt率（フラグがあれば）
+  mt <- if (!is.null(rowData(se)$is_mito)) {
+    colSums(assay(se, "counts")[rowData(se)$is_mito, , drop=FALSE]) / lib
+  } else rep(NA_real_, ncol(se))
+  # 相関の代表値：各サンプルの他サンプルとの平均相関
+  logcpm <- log2(t(t(assay(se, "counts"))/lib)*1e6 + 1)
+  C <- cor(logcpm)
+  ave_corr <- sapply(1:ncol(se), function(i) mean(C[i,-i]))
+  # PCA距離（中心からの距離；robust化は必要に応じて）
+  pc <- prcomp(t(logcpm))
+  d_pc <- sqrt(rowSums(scale(pc$x[,1:2])^2))
+  
+  thr <- list(
+    lib_low = unname(quantile(lib, probs=q_lib)),
+    det_low = if (is.na(min_detect_abs)) unname(quantile(det, probs=q_detect)) else min_detect_abs,
+    mt_high = if (all(is.na(mt))) NA_real_ else unname(quantile(mt, probs=mt_upper_q)),
+    corr_low = unname(quantile(ave_corr, probs=q_corr)),
+    pcd_high = unname(quantile(d_pc, probs=0.95))
+  )
+  flags <- data.frame(
+    sample = colnames(se),
+    flag_lib = lib < thr$lib_low,
+    flag_det = det < thr$det_low,
+    flag_mt  = if (is.na(thr$mt_high)) FALSE else mt > thr$mt_high,
+    flag_corr= ave_corr < thr$corr_low,
+    flag_pcd = d_pc > thr$pcd_high
+  )
+  flags$flag_any <- apply(flags[,-1], 1, any)
+  # colDataへ結合
+  colData(se)$qc_flag_any <- flags$flag_any
+  colData(se)$qc_flag_detail <- apply(flags[,-1], 1, function(x) paste(names(x)[which(x)], collapse=","))
+  metadata(se)$qc_thresholds <- thr
+  se
 }
-qc_pca <- function(se){
-  logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
-  prcomp(t(logcpm))
-}
+
+se_air2 <- qc_autoflag(se_air)
+colData(se_air2)[, c("qc_flag_any","qc_flag_detail")]
+metadata(se_air2)$qc_thresholds
+```
+**ポイント**
+- **固定しきい値ではなく分布**（分位点）を採用 ⇒ 実験ごとの規模・深さに順応。
+- `qc_flag_detail` に **どの条件で旗が立ったか** を文字列で保存し、レビュー可能に。
+- 重要サンプルの場合は **自動=候補** とし、最終判断は **人間のレビュー**。
+
+## 自前カウント表への適用
+```{r custom-counts-autoflag, eval=FALSE}
+# counts.tsv（genes x samples）、coldata.tsv（sample列をキー）を想定
+cts <- as.matrix(read.csv("counts.tsv", sep="\t", row.names=1, check.names=FALSE))
+cd  <- read.csv("coldata.tsv", sep="\t")
+se0 <- SummarizedExperiment(assays=list(counts=cts), colData=S4Vectors::DataFrame(cd))
+# 注釈テーブル gene_id→is_mito 列を join して rowData に付与することを推奨
+# rowData(se0)$is_mito <- anno$gene_id %in% mito_genes
+se1 <- qc_autoflag(se0)
+# flags をCSVに出力
+flg <- as.data.frame(colData(se1)[,c("qc_flag_any","qc_flag_detail")])
+flg$sample <- rownames(flg)
+write.csv(flg, file="qc_flags.csv", row.names=FALSE)
 ```
 
-> **まとめ**：QCは**排除**ではなく**モデル化**も選択肢。**設計式に落とす／補正の是非を検証**しながら、**透明な基準と記録**で再現性を担保しましょう。
+# MultiQC の項目マッピング（R 取り込み雛形を拡張）
+実運用では **MultiQC** の `multiqc_general_stats.*` などを読み込み、**指標名の違いを標準化**して `colData` に格納します。
+
+```{r multiqc-mapping, eval=FALSE}
+# 代表的なキーのマッピング（FastQC/STAR/salmon などの集計列）
+# ※ 実際の列名は MultiQC のバージョンやツールにより異なるため、下の dict を調整
+library(jsonlite)
+
+# 1) MultiQCのTSVを読む場合
+mq <- read.csv("multiqc_general_stats.txt", sep="\t", check.names=FALSE)
+# 例: 列名の候補を正規化
+normalize_names <- function(x){
+  tolower(gsub("[ .-]","_", x))
+}
+colnames(mq) <- normalize_names(colnames(mq))
+# 主要指標が入っていそうな列名の候補
+cand <- c("percent_aligned","percent_mapped","mapping_rate","uniquely_mapped_percent",
+          "qc_passed","avg_sequence_length","percent_gc","overrepresented",
+          "duplication","adapter_content","rRNA_percent","mitochondrial_percent")
+# 実在する列のみ抽出
+keep <- intersect(cand, colnames(mq))
+# sampleキー名の推定
+sample_col <- if ("sample" %in% colnames(mq)) "sample" else colnames(mq)[1]
+# colDataへのマージ例
+key <- sample_col
+rownames(colData(se)) <- colData(se)$sample_id %||% colnames(se)
+idx <- match(rownames(colData(se)), mq[[key]])
+colData(se)[, keep] <- mq[idx, keep]
+
+# 2) JSON（multiqc_data.json）からの抽出例
+# mj <- fromJSON("multiqc_data.json")
+# 必要なセクションを辿って data.frame 化 → 上と同様に join
+```
+
+**運用ベストプラクティス**
+- **辞書（mapping dict）** をリポジトリに置き、列名の揺れを統一。
+- `colData(se)$multiqc_source` にファイルパスと md5 を保存し**追跡可能性**を確保。
+- MultiQCの**バージョン**と**各ツールのバージョン**も `metadata(se)$tools` に記録。
+
+# 自動レポート出力（QCサマリー）
+```{r qc-report, eval=FALSE}
+# flags と主要メトリクスを knitr::kable で簡易レポート化
+library(knitr)
+libsize <- colSums(assay(se, "counts"))
+detected <- colSums(assay(se, "counts")>0)
+mt_rate <- if (!is.null(rowData(se)$is_mito)) colSums(assay(se, "counts")[rowData(se)$is_mito,,drop=FALSE])/libsize else NA
+rep <- data.frame(sample=colnames(se), libsize, detected, mt_rate, flag_any=colData(se)$qc_flag_any, flag_detail=colData(se)$qc_flag_detail)
+kable(rep, caption="QC summary (auto flags)")
+```
+
+# 付録：関数スニペット集
