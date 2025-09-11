@@ -1,20 +1,139 @@
 ---
-title: "10_scrna_qc_preprocess"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第10回 scRNA①：読込・QC・正規化・次元圧縮・クラスタリング"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+fontsize: 11pt
 ---
 
-# 目的
-scRNA-seq の QC → 正規化 → 次元圧縮 → クラスタリング。
+```{r setup, include=FALSE}
+# 乱数シード（再現性担保）
+set.seed(42)
 
-```r
-suppressPackageStartupMessages(library(Seurat))
-# 小型の 10X 例を想定（同梱する場合は data/raw/pbmc3k_small/ に配置）
-# mat <- Read10X("data/raw/pbmc3k_small")
-# obj <- CreateSeuratObject(mat, project="pbmc3k", min.cells=3, min.features=200)
-# obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern="^MT-")
-# obj <- subset(obj, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
-# obj <- SCTransform(obj, verbose=FALSE)
-# obj <- RunPCA(obj) |> FindNeighbors(dims=1:20) |> FindClusters(0.5) |> RunUMAP(dims=1:20)
-# DimPlot(obj, reduction="umap", label=TRUE)
+# チャンクの表示設定
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
+
+# 必要パッケージの確認とインストール ----
+needs <- c("Seurat", "SeuratData", "patchwork", "dplyr", "ggplot2")
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  # CRAN パッケージを先にインストール
+  install.packages(setdiff(to_install, c("Seurat", "SeuratData")))
+  # Seurat と SeuratData は個別インストール（依存がBioconductorにまたがるため）
+  if ("Seurat" %in% to_install) install.packages("Seurat")
+  if ("SeuratData" %in% to_install) install.packages("SeuratData")
+}
+
+# 読み込み
+library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(dplyr)
+library(ggplot2)
 ```
+
+# ねらい
+本章では、単一細胞 RNA シークエンス（scRNA-seq）の基本的な解析パイプラインを、初心者でも理解できるように詳細に解説する。対象とする工程は、データの読込、品質管理（QC）指標の算出・フィルタリング、正規化、次元圧縮（PCA/UMAP）、およびクラスタリングである。教材には Seurat チュートリアルで用いられる `pbmc3k` データセットを利用するが、インターネット環境に依存しないよう `pbmc_small` へのフォールバック手順も示す。
+
+## データ読込
+```{r data-load}
+# pbmc3k データセットの読み込み。SeuratData がインターネットから取得できない場合には、
+# 内蔵の pbmc_small オブジェクトにフォールバックする。
+pbmc <- NULL
+try({
+  # インストール済みデータセット一覧を確認し、無ければダウンロード
+  if (!"pbmc3k" %in% SeuratData::AvailableData()$Dataset) {
+    SeuratData::InstallData("pbmc3k")
+  }
+  data("pbmc3k")            # pbmc3k.Seurat がロードされる
+  pbmc <- pbmc3k.Seurat
+}, silent = TRUE)
+
+# フォールバック
+if (is.null(pbmc)) {
+  message("pbmc3k の取得に失敗したため、pbmc_small を使用します。")
+  pbmc <- pbmc_small
+}
+pbmc
+```
+
+## QC 指標の算出と可視化
+```{r qc}
+# ミトコンドリア由来遺伝子の割合を計算し、オブジェクトメタデータに保存する。
+# ヒトのミトコンドリア遺伝子記号は通常 "^MT-" で始まる。
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+# QC 指標の分布をヴァイオリンプロットで確認
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# 指標同士の関係を散布図で示す
+FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+  FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+```
+
+## フィルタリング（低品質細胞の除去）
+```{r filter}
+# 教材用のしきい値設定。実データでは分布を確認し、適宜閾値を調整する。
+min.features <- 200    # 検出遺伝子数が少ない細胞を除外
+max.features <- 6000   # 検出遺伝子数が極端に多い細胞（ダブレットの可能性）を除外
+max.mt <- 10           # ミトコンドリア比率が高い細胞を除外
+
+pbmc <- subset(pbmc,
+               subset = nFeature_RNA >= min.features &
+                        nFeature_RNA <= max.features &
+                        percent.mt <= max.mt)
+
+dim(pbmc)  # フィルタ後の細胞数と遺伝子数
+```
+
+## 正規化と変動遺伝子の抽出
+```{r normalize}
+# LogNormalize 法によるライブラリサイズ正規化
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 1e4)
+
+# 変動の大きい遺伝子を抽出（VST 法）。2000 個の上位遺伝子を使用。
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# スケーリング：ミトコンドリア比率の影響を回帰し、データを中心化・分散化する。
+pbmc <- ScaleData(pbmc, vars.to.regress = "percent.mt")
+```
+
+## 次元圧縮とクラスタリング、UMAP
+```{r pca-cluster}
+# 主成分分析（PCA）を実行
+pbmc <- RunPCA(pbmc, features = VariableFeatures(pbmc))
+
+# エルボープロットで主成分の寄与率を確認（ここでは 50 次元まで表示）
+ElbowPlot(pbmc, ndims = 50)
+
+# 近傍グラフを構築しクラスタリングを行う（ここでは 1:30 次元を使用）
+pbmc <- FindNeighbors(pbmc, dims = 1:30)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+
+# UMAP による可視化
+pbmc <- RunUMAP(pbmc, dims = 1:30)
+
+# UMAP 上にクラスタ番号を表示
+DimPlot(pbmc, reduction = "umap", label = TRUE) + NoLegend()
+```
+
+## 代表的マーカー遺伝子の可視化
+```{r markers}
+# ヒトPBMCにおいて頻用される代表的マーカーの発現を確認する。
+FeaturePlot(pbmc, features = c("MS4A1", "CD3D", "LYZ", "CD14", "FCGR3A", "MS4A7"))
+
+# クラスタごとの発現分布（例として 2遺伝子）
+VlnPlot(pbmc, features = c("MS4A1", "CD3D"), group.by = "seurat_clusters", pt.size = 0)
+```
+
+## 結果の保存
+```{r save}
+# 後続の解析で再利用できるように Seurat オブジェクトを保存する。
+saveRDS(pbmc, file = "pbmc_qc_norm_umap.rds")
+```
+
+# まとめ
+- ミトコンドリア比率や検出遺伝子数の分布を可視化し、しきい値を設けて低品質細胞を除外した。  
+- LogNormalize 法と変動遺伝子抽出・スケーリングによりデータを正規化した。  
+- PCA/UMAP による次元圧縮とクラスタリングを通じて、細胞集団の構造を視覚化した。  
+- 代表的マーカー遺伝子の発現を確認し、次回のマーカー同定および注釈ステップに備えた。

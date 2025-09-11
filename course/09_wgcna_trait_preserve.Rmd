@@ -1,18 +1,185 @@
 ---
-title: "09_wgcna_trait_preserve"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第9回 WGCNA②：モジュール解釈・保存性・ハブ遺伝子探索"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+fontsize: 11pt
 ---
 
-# 目的
-モジュールと表現型の関連、保存性、ハブ探索の基礎。
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
+set.seed(42)
 
-```r
-# ダミーの表現型ベクトルで相関を計算（実データでは外部コホートを用意）
-suppressPackageStartupMessages({ library(readr); library(WGCNA) })
-expr <- read_csv("data/processed/airway_counts_small.csv"); mat <- as.matrix(expr[,-ncol(expr)]); rownames(mat) <- expr$gene
-pheno <- rnorm(ncol(mat))
-ME <- moduleEigengenes(t(mat), colors = dynamicTreeCut::cutreeDynamic(hclust(dist(t(mat))), distM = NULL))$eigengenes
-cors <- cor(ME, pheno)
-cors[1:5, , drop=FALSE]
+needs <- c("WGCNA", "dplyr", "tibble", "ggplot2")
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  install.packages(to_install)
+}
+library(WGCNA)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+allowWGCNAThreads(nThreads = 2)
+options(stringsAsFactors = FALSE)
 ```
+
+# ねらい
+- **モジュール固有値（ME）**と**表現型（trait）**の相関で**機能解釈**。  
+- **モジュール保存性（modulePreservation）**で**別コホート**への汎化を検証。  
+- **ハブ遺伝子**（Module Membership, Gene Significance）を抽出。
+
+## データ（雌/雄 肝臓コホート：WGCNA付属）
+```{r data}
+data("femaleLiver-Data")
+data("maleLiver-Data")
+
+# 行=サンプル, 列=遺伝子 へ整形
+datFem <- as.data.frame(t(femaleLiverExpr))
+datMale <- as.data.frame(t(maleLiverExpr))
+
+# 簡易trait（例：体重など、付属traitsから一つ選択）
+# femaleLiverTraits / maleLiverTraits は data.frame（行=サンプル）を想定
+traitFem <- as.data.frame(femaleLiverTraits)
+traitMale <- as.data.frame(maleLiverTraits)
+
+dim(datFem); dim(traitFem)[1:2]
+```
+
+## 既存モジュールの読込または再構築
+> **推奨**：前回（第8回）で保存した `moduleColors` / `MEs` を読み込む。ここでは再構築例も示す。
+
+```{r rebuild-or-load}
+# --- （A）前回の結果を読み込む場合 ---
+# moduleColors <- readRDS("moduleColors_female.rds")
+# MEs <- readRDS("MEs_female.rds")
+
+# --- （B）このRmd単体で完結させるため再構築 ---
+powers <- c(1:10, seq(12, 30, 2))
+sft <- pickSoftThreshold(datFem, powerVector = powers, verbose = 5, networkType = "signed")
+beta <- dplyr::coalesce(powers[which(-sign(sft$fitIndices[,3])*sft$fitIndices[,2] >= 0.9)[1]], 12)
+
+netFem <- blockwiseModules(
+  datFem, power = beta, TOMType = "signed",
+  minModuleSize = 30, mergeCutHeight = 0.25,
+  numericLabels = TRUE, pamRespectsDendro = FALSE,
+  saveTOMs = FALSE, verbose = 3
+)
+moduleColors <- labels2colors(netFem$colors)
+MEs <- orderMEs(netFem$MEs)
+table(moduleColors)[1:5]
+```
+
+## モジュール × trait 相関
+```{r ME-trait}
+# traitは数値化（連続変数を想定；カテゴリの場合はダミー化）
+# 例として最初の1列を用いる（必要に応じて変更）
+traitNumeric <- as.numeric(traitFem[, 1])
+names(traitNumeric) <- rownames(traitFem)
+
+# サンプル整合
+commonSamples <- intersect(rownames(MEs), names(traitNumeric))
+ME_sub <- MEs[commonSamples, , drop = FALSE]
+trait_sub <- traitNumeric[commonSamples]
+
+cors <- sapply(ME_sub, function(me) cor(me, trait_sub, use = "p"))
+pvs  <- sapply(ME_sub, function(me) cor.test(me, trait_sub)$p.value)
+res <- tibble(module = names(cors), cor = as.numeric(cors), p.value = as.numeric(pvs)) %>%
+  arrange(p.value)
+
+head(res, 10)
+```
+
+```{r plot-heat, fig.height=4.5}
+df_plot <- res %>%
+  mutate(label = paste0(module, "\n(p=", signif(p.value, 2), ")"))
+
+ggplot(df_plot, aes(x = 1, y = reorder(label, cor), fill = cor)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", midpoint = 0) +
+  labs(x = "", y = "Module (with p-value)", fill = "Correlation",
+       title = "Module–Trait correlation (female)") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+```
+
+## モジュール保存性（female → male）
+```{r preservation, cache=TRUE}
+multiExpr <- list(female = list(data = datFem),
+                  male   = list(data = datMale))
+
+colorList <- list(female = moduleColors)
+
+# permutation数は演習用に小さめ（実解析では>=1000を推奨）
+pres <- modulePreservation(
+  multiExpr, colorList,
+  referenceNetworks = 1,  # 1: femaleを参照
+  nPermutations = 100,
+  networkType = "signed",
+  verbose = 3
+)
+
+# Zsummaryの抽出（>10: 強い保存, 2~10: 中程度, <2: 低い）
+presZ <- pres$preservation$Z$ref.female$inColumnsAlsoPresentIn.male %>%
+  as.data.frame() %>%
+  rownames_to_column("module") %>%
+  dplyr::select(module, Zsummary.pres)
+head(presZ, 10)
+```
+
+```{r plot-pres}
+ggplot(presZ, aes(x = reorder(module, Zsummary.pres), y = Zsummary.pres)) +
+  geom_hline(yintercept = 10, linetype = 2, color = "darkgreen") +
+  geom_hline(yintercept = 2,  linetype = 2, color = "orange") +
+  geom_point(size = 2) +
+  coord_flip() +
+  labs(x = "Module", y = "Zsummary (female preserved in male)",
+       title = "Module preservation Zsummary")
+```
+
+## ハブ遺伝子（Module Membership & Gene Significance）
+```{r hub}
+# Module Eigengenes（サンプル×モジュール）
+MEs_fem <- MEs
+
+# Gene significance（GS）: traitとの相関（遺伝子単位）
+GS <- apply(datFem, 2, function(g) cor(g, trait_sub[rownames(datFem)], use = "p"))
+
+# Module membership（kME）: 遺伝子表現とMEの相関
+kME <- cor(datFem, MEs_fem[rownames(datFem), ], use = "p")
+
+# 例：注目モジュールを一つ選ぶ（p値最小のモジュール）
+mod_pick <- res$module[1]
+kME_pick <- kME[, mod_pick]
+in_mod <- moduleColors == gsub("^ME", "", mod_pick) | moduleColors == mod_pick
+
+hub_tbl <- tibble(
+  gene = colnames(datFem),
+  module = moduleColors,
+  kME = as.numeric(kME_pick),
+  GS = as.numeric(GS)
+) %>%
+  filter(module == gsub("^ME", "", mod_pick)) %>%
+  arrange(desc(kME * abs(GS)))
+
+head(hub_tbl, 15)
+```
+
+```{r plot-kME-GS}
+ggplot(hub_tbl, aes(x = kME, y = abs(GS))) +
+  geom_point(alpha = 0.5) +
+  labs(x = "Module Membership (kME)", y = "Gene Significance (|GS|)",
+       title = paste0("Hub-candidate scatter in module: ", gsub('^ME','', mod_pick))) +
+  theme_minimal()
+```
+
+# まとめ
+- **モジュール–trait相関**で機能的解釈を得る。  
+- **modulePreservation**により**別コホート**への保存性を評価。  
+- **kME × GS**で**ハブ候補**を抽出。
+
+# 演習
+1. 参照・検証の向きを **male→female** に替えて保存性を比較。  
+2. traitを別変数（カテゴリはダミー化）に置き換えて相関を再計算。  
+3. ハブ上位遺伝子の機能注釈（`clusterProfiler` など）を追加し、解釈を強化。

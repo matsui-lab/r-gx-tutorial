@@ -1,19 +1,136 @@
 ---
-title: "08_wgcna_modules"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第8回 WGCNA①：共発現ネットワーク構築（soft-threshold→modules）"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+fontsize: 11pt
 ---
 
-# 目的
-WGCNA によるモジュール検出の最小パイプライン。
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
+set.seed(42)
 
-```r
-suppressPackageStartupMessages({ library(readr); library(WGCNA) })
-allowWGCNAThreads()
-X <- read_csv("data/processed/airway_counts_small.csv")
-mat <- as.matrix(X[,-ncol(X)]); rownames(mat) <- X$gene
-matz <- t(scale(t(log1p(mat)), center=TRUE, scale=TRUE))
-sft <- pickSoftThreshold(matz, powerVector=1:12, verbose=5)
-net <- blockwiseModules(matz, power=sft$powerEstimate %||% 6, minModuleSize=30, mergeCutHeight=0.25)
-names(table(net$colors))
+# 必要パッケージ
+needs <- c("WGCNA", "tibble", "dplyr")
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  # WGCNAはCRAN配布
+  install.packages(setdiff(to_install, "WGCNA"))
+  if ("WGCNA" %in% to_install) install.packages("WGCNA")
+}
+library(WGCNA)
+library(tibble)
+library(dplyr)
+
+# WGCNAの並列スレッド設定（学内サーバ等では適宜調整）
+allowWGCNAThreads(nThreads = 2)
+options(stringsAsFactors = FALSE)
 ```
+
+# ねらい
+- **soft-threshold**（スケールフリー性）を評価し、  
+- **blockwiseModules** により**モジュール（共発現クラスター）**を構築する。
+
+WGCNAは**相関ベース**で遺伝子同士のネットワークを構成し、**モジュール（色）**で表す。
+
+## データ（WGCNA付属サンプル：肝臓発現）
+```{r data}
+# 付属データ（雌マウス肝臓：femaleLiverExpr, femaleLiverTraits 等）
+data("femaleLiver-Data")
+# 行: サンプル, 列: 遺伝子 を期待するため転置に注意
+datExpr0 <- as.data.frame(femaleLiverExpr)     # 行: genes? データ構造を確認
+dim(datExpr0)[1:2]
+
+# チュートリアル準拠で「行=サンプル、列=遺伝子」へ整形
+# femaleLiverExprは行=遺伝子, 列=サンプル の行列として提供される想定
+datExpr <- as.data.frame(t(femaleLiverExpr))
+dim(datExpr)
+
+# 欠損・外れの簡易チェック
+gsg <- goodSamplesGenes(datExpr, verbose = 3)
+gsg$allOK
+if (!gsg$allOK) {
+  datExpr <- datExpr[gsg$goodSamples, gsg$goodGenes]
+}
+```
+
+## サンプル外れ値のスクリーニング（任意）
+```{r sample-tree}
+sampleTree <- hclust(dist(datExpr), method = "average")
+plot(sampleTree, main = "Sample clustering to detect outliers", xlab = "", sub = "")
+abline(h = 150, col = "red")  # しきい値は例示
+```
+
+## soft-threshold（β）の選定
+```{r pick-soft}
+powers <- c(1:10, seq(12, 30, by = 2))
+sft <- pickSoftThreshold(datExpr, powerVector = powers, verbose = 5, networkType = "signed")
+
+# スケールフリー適合度（R^2）と平均連結度を可視化
+par(mfrow = c(1, 2))
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Model Fit,signed R^2",
+     type = "n", main = "Scale independence")
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels = powers, cex = 0.9, col = "blue")
+abline(h = 0.90, col = "red")  # 目標R^2
+
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab = "Soft Threshold (power)", ylab = "Mean connectivity", type = "n", main = "Mean connectivity")
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels = powers, cex = 0.9, col = "blue")
+par(mfrow = c(1,1))
+
+# 例として、R^2>=0.9 を初めて満たすpowerを選択（なければ10~12付近）
+beta <- dplyr::coalesce(powers[which(-sign(sft$fitIndices[,3])*sft$fitIndices[,2] >= 0.9)[1]], 12)
+beta
+```
+
+## モジュール検出（blockwiseModules）
+```{r modules}
+net <- blockwiseModules(
+  datExpr,
+  power = beta,
+  TOMType = "signed",
+  minModuleSize = 30,    # 小さすぎるモジュールを抑制
+  reassignThreshold = 0, mergeCutHeight = 0.25,  # 近縁モジュールのマージ閾値
+  numericLabels = TRUE,
+  pamRespectsDendro = FALSE,
+  saveTOMs = FALSE,
+  verbose = 3
+)
+
+# モジュールカラー
+moduleColors <- labels2colors(net$colors)
+table(moduleColors)
+```
+
+## デンドログラムとモジュール色の可視化
+```{r plot-dendro, fig.height=6}
+plotDendroAndColors(
+  net$dendrograms[[1]],
+  moduleColors[net$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE, hang = 0.03,
+  addGuide = TRUE, guideHang = 0.05,
+  main = "Gene dendrogram and module colors"
+)
+```
+
+## モジュール固有値（ME）とサイズ
+```{r MEs}
+MEs <- net$MEs
+# 名前整形
+MEs <- orderMEs(MEs)
+sizes <- table(moduleColors) %>% as.data.frame() %>% arrange(desc(Freq))
+colnames(sizes) <- c("module", "size")
+head(sizes, 10)
+```
+
+# まとめ
+- soft-threshold（β）により**スケールフリー性**を担保。  
+- `blockwiseModules()`で**安定な共発現モジュール**を構築。
+
+# 演習
+1. `networkType = "unsigned"` に切り替え、モジュール数・サイズを比較。  
+2. `minModuleSize` や `mergeCutHeight` を変化させ、デンドログラムの変化を観察。  
+3. 後続回で利用するため、`moduleColors` と `MEs` をRDSへ保存せよ。

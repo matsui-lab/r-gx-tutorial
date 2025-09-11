@@ -1,17 +1,158 @@
 ---
-title: "07_gsva_samplescore"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第7回 GSEA②：GSVA/ssGSEAでサンプルスコア化→群差検定"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+fontsize: 11pt
 ---
 
-# 目的
-GSVA/ssGSEA によるサンプルレベルスコア化と群差の検定。
+```{r setup, include=FALSE}
+# knitrと表示設定
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
 
-```r
-suppressPackageStartupMessages({ library(readr); library(GSVA); library(msigdbr) })
-X <- as.matrix(readr::read_csv("data/processed/airway_counts_small.csv")[,-ncol(readr::read_csv("data/processed/airway_counts_small.csv"))])
-rownames(X) <- readr::read_csv("data/processed/airway_counts_small.csv")$gene
-h <- msigdbr(species="Homo sapiens", category="H") |> split(x=.$gene_symbol, f=.$gs_name)
-ss <- gsva(X, h, method="ssgsea")
-dim(ss)
+# 乱数シード（再現性の担保）
+set.seed(42)
+
+# 必要パッケージの確認とインストール ----
+needs <- c(
+  "SummarizedExperiment", "DESeq2", "GSVA", "limma", "msigdbr",
+  "airway", "dplyr", "tibble", "stringr", "ggplot2"
+)
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  # BioconductorとCRANの双方を想定
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  bioc_pkgs <- c("SummarizedExperiment", "DESeq2", "GSVA", "airway")
+  cran_pkgs <- setdiff(to_install, bioc_pkgs)
+  bioc_to_install <- intersect(to_install, bioc_pkgs)
+  if (length(bioc_to_install) > 0) BiocManager::install(bioc_to_install, ask = FALSE, update = FALSE)
+  if (length(cran_pkgs) > 0) install.packages(cran_pkgs)
+}
+
+# 読み込み
+library(SummarizedExperiment)
+library(DESeq2)
+library(GSVA)
+library(limma)
+library(msigdbr)
+library(airway)
+library(dplyr)
+library(tibble)
+library(stringr)
+library(ggplot2)
 ```
+
+# ねらい
+本回では、**遺伝子セット変動解析（GSVA/ssGSEA）**により各サンプルへ**経路スコア**を付与し、**群間差**（例：処置あり/なし）を**線形モデル（limma）**で検定する。遺伝子単位の差分解析（第5回）を、**経路レベル**での比較に拡張する。
+
+## データ
+- `airway`（RNA-seq）を使用
+- `DESeq2::vst()` により正規化・分散安定化
+- 遺伝子セット：MSigDB **Hallmark**（`msigdbr`）
+
+```{r data-load}
+# airwayデータの読み込み
+data("airway")
+se <- airway
+
+# メタデータの確認（dex: デキサメタゾン処置の有無）
+colData(se) %>% as.data.frame() %>% dplyr::select(dex, cell, lib.size=head) %>% head()
+
+# DESeq2オブジェクトに変換
+dds <- DESeqDataSet(se, design = ~ dex)
+
+# 低カウント遺伝子の除去（総カウントが小さい遺伝子はGSVAに不適）
+keep <- rowSums(counts(dds) >= 10) >= 2
+dds <- dds[keep, ]
+
+# VST正規化（GSVAは連続値行列を入力とする）
+vsd <- vst(dds, blind = TRUE)
+expr <- assay(vsd)  # 行:遺伝子, 列:サンプル
+dim(expr)
+```
+
+## 遺伝子IDの整備（Ensembl版数の除去→SYMBOLへ）
+```{r id-map}
+# airwayの行名はEnsembl Gene ID（バージョン付き）であることが多い
+ens <- rownames(expr)
+
+# バージョン（.数字）を除去
+ens_clean <- sub("\\.\\d+$", "", ens)
+
+# アノテーション取得（org.Hs.eg.dbを使わず、msigdbr集合のSYMBOLと突き合わせる設計）
+# Hallmark（ヒト）の遺伝子セットを取得
+msig_h <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  distinct()
+
+# SYM集合を作成
+hallmark_list <- split(msig_h$gene_symbol, msig_h$gs_name)
+
+# Ensembl→SYMBOLへの変換は簡便化のため、
+# ここでは「airway行名=SYMBOL」でない前提を踏まえ、SYMBOLを推定できない遺伝子は除外する。
+# 実解析ではbiomaRtやAnnotationDbiで対応することが望ましい。
+# 今回は例示として rownames を SYMBOL と仮定できる部分集合へフィルタ（SYMBOLらしき大文字英字列）
+symbol_like <- grepl("^[A-Z0-9\\-]+$", rownames(expr))
+expr_sym <- expr[symbol_like, ]
+expr_sym[1:3, 1:3]
+```
+
+> **注意**：実運用では **Ensembl→SYMBOL の厳密マッピング**（`biomaRt`や`org.Hs.eg.db`）を推奨する。本Rmdは演習の通し実行性を優先して簡略化している。
+
+## GSVA の実行
+```{r gsva-run, cache=TRUE}
+# GSVA/ssGSEA を実行（デフォルト: gsva。ssGSEAはmethod="ssgsea"）
+gsva_scores <- GSVA::gsva(expr = as.matrix(expr_sym),
+                          gset.idx.list = hallmark_list,
+                          method = "gsva",  # "ssgsea"に切替可能
+                          kcdf = "Gaussian",  # VST後の連続値を想定
+                          mx.diff = TRUE, parallel.sz = 1)
+
+dim(gsva_scores)       # 行: gene set, 列: sample
+rownames(gsva_scores)[1:5]
+```
+
+## 群差検定（limma）
+```{r limma-contrast}
+# 群ラベル（dex: trt（処置あり）/untrt（なし））
+grp <- factor(colData(se)$dex, levels = c("untrt", "trt"))
+
+# デザイン行列の作成
+design <- model.matrix(~ grp)
+colnames(design)
+
+# 線形モデル適用
+fit <- lmFit(gsva_scores, design)
+fit <- eBayes(fit)
+
+# 結果表（grpトリートメント効果の係数=2列目）
+tab <- topTable(fit, coef = 2, number = Inf) %>%
+  rownames_to_column("pathway")
+
+head(tab, 10)
+```
+
+## 可視化（上位経路の効果量）
+```{r plot-top}
+# 効果量（logFC相当）上位の経路を可視化
+top_n <- 10
+plot_df <- tab %>%
+  arrange(desc(logFC)) %>%
+  slice(1:top_n)
+
+ggplot(plot_df, aes(x = reorder(pathway, logFC), y = logFC)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Hallmark Pathway", y = "Effect size (logFC-like)", 
+       title = "Top pathways by GSVA score difference (trt vs untrt)")
+```
+
+# まとめ
+- GSVA/ssGSEAにより**サンプル単位の経路活性**を推定。
+- limmaにより**群間差**を統計検定。
+- 遺伝子から**経路**への集約は、解釈の安定化・再現性の向上に寄与。
+
+# 演習
+1. `method = "ssgsea"` に切り替えて結果を比較せよ。  
+2. Hallmark以外（C2:CPなど）の経路集合でも再実行し、差が大きい経路を比較せよ。  
+3. `airway`の群以外の因子（`cell`）も加えたモデル（交互作用を含む）を構築し、結果を解釈せよ。

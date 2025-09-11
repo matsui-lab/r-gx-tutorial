@@ -1,16 +1,151 @@
 ---
-title: "11_scrna_markers_pseudobulk"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第11回 scRNA②：マーカー・注釈・擬似バルク→GSEA"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: html_document
+fontsize: 11pt
 ---
 
-# 目的
-マーカー検出・注釈・擬似バルク → DGE/GSEA への接続。
+```{r setup, include=FALSE}
+# 再現性と描画設定
+set.seed(42)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
 
-```r
-suppressPackageStartupMessages(library(Seurat))
-# DefaultAssay(obj) <- "SCT"
-# mk <- FindAllMarkers(obj, only.pos=TRUE, min.pct=0.25, logfc.threshold=0.25)
-# pb <- AggregateExpression(obj, group.by=c("subject","seurat_clusters"), assays="RNA", slot="counts")$RNA
-# 以降は bulk DGE の手順に接続
+# 必要パッケージの確認とインストール ----
+needs <- c("Seurat", "dplyr", "ggplot2", "Matrix", "edgeR", "DESeq2", "fgsea", "msigdbr")
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  install.packages(setdiff(to_install, c("edgeR", "DESeq2", "fgsea", "msigdbr", "Seurat")))
+  if ("Seurat" %in% to_install) install.packages("Seurat")
+  if ("edgeR" %in% to_install) install.packages("edgeR")
+  if ("DESeq2" %in% to_install) install.packages("DESeq2")
+  if ("fgsea" %in% to_install) install.packages("fgsea")
+  if ("msigdbr" %in% to_install) install.packages("msigdbr")
+}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+library(edgeR)
+library(DESeq2)
+library(fgsea)
+library(msigdbr)
 ```
+
+# ねらい
+本章では、scRNA-seq データからクラスタ特異的なマーカー遺伝子を同定し、既知のマーカーに基づく簡易注釈を行ったうえで、クラスタごとのカウントを擬似的に集約（pseudo-bulk）して差分解析と経路解析（GSEA）に接続する。前章で作成した `pbmc_qc_norm_umap.rds` を読み込み、実践的な手順を示す。
+
+## データの読み込み
+```{r load}
+# 前章で保存した Seurat オブジェクトを読み込む。存在しない場合はエラーを出す。
+if (!file.exists("pbmc_qc_norm_umap.rds")) {
+  stop("pbmc_qc_norm_umap.rds が見つかりません。第10回のRmdを実行してファイルを生成してください。")
+}
+pbmc <- readRDS("pbmc_qc_norm_umap.rds")
+
+# UMAP を確認してクラスタリングが引き継がれていることを確認
+DimPlot(pbmc, reduction = "umap", label = TRUE) + NoLegend()
+```
+
+## マーカー遺伝子の抽出と簡易注釈
+```{r markers}
+# 全てのクラスタに対して上昇方向のマーカー遺伝子を抽出する。
+markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+# p 値調整が小さい順に上位を確認
+head(markers %>% arrange(p_val_adj), 10)
+
+# 簡易な注釈のため、典型的なマーカーセットを用意（実務では拡充された辞書や自動注釈ツールを活用）
+annot_rules <- list(
+  Bcell = c("MS4A1", "CD79A", "CD79B"),
+  Tcell = c("CD3D", "CD3E", "CD2"),
+  NK    = c("NKG7", "GNLY"),
+  Mono  = c("LYZ", "S100A8", "S100A9", "FCGR3A", "MS4A7"),
+  DC    = c("FCER1A", "CST3")
+)
+
+# クラスタごとに上位マーカーをまとめ、最も多くヒットするカテゴリーでラベルを付与
+top_by_cluster <- markers %>%
+  group_by(cluster) %>%
+  slice_max(avg_log2FC, n = 20) %>%
+  summarise(genes = list(unique(gene)), .groups = "drop")
+
+label_map <- sapply(top_by_cluster$genes, function(gs) {
+  hits <- sapply(names(annot_rules), function(lbl) sum(gs %in% annot_rules[[lbl]]))
+  if (max(hits) == 0) "Unknown" else names(which.max(hits))
+})
+names(label_map) <- top_by_cluster$cluster
+
+# pbmc オブジェクトに注釈列を追加
+pbmc$anno <- factor(label_map[as.character(pbmc$seurat_clusters)])
+
+# 注釈付きで UMAP を描画
+DimPlot(pbmc, group.by = "anno", label = TRUE) + NoLegend()
+```
+
+## 擬似バルク集計
+```{r pseudobulk}
+# 生カウント行列を取得（遺伝子 × 細胞）
+counts <- GetAssayData(pbmc, assay = "RNA", slot = "counts")
+
+# クラスタラベルを取得し、ユニークなクラスタ順に整列
+clust <- pbmc$seurat_clusters
+levels(clust) <- sort(unique(as.numeric(clust)))
+
+# 各クラスタについて、所属する細胞のカウントを合計
+pb_mat <- sapply(levels(clust), function(k) {
+  cols <- which(clust == k)
+  Matrix::rowSums(counts[, cols, drop = FALSE])
+})
+colnames(pb_mat) <- paste0("cluster", levels(clust))
+dim(pb_mat)
+```
+
+## 擬似バルク差分解析
+```{r edgeR}
+# 例としてクラスタ 0 とそれ以外を比較する。grp の設定を変更すれば他の比較も可能。
+grp <- factor(c("target", rep("other", ncol(pb_mat) - 1)))
+y <- DGEList(counts = pb_mat, group = grp)
+y <- calcNormFactors(y)
+design <- model.matrix(~ grp)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+qlf <- glmQLFTest(fit, coef = 2)  # target vs other
+de_tab <- topTags(qlf, n = Inf)$table
+de_tab$gene <- rownames(de_tab)
+head(de_tab, 10)
+```
+
+## GSEA（Hallmark 道）
+```{r gsea}
+# ランキングスコアを logFC の値とする
+rank_stat <- de_tab$logFC
+names(rank_stat) <- de_tab$gene
+rank_stat <- sort(rank_stat, decreasing = TRUE)
+
+# Hallmark gene sets の取得
+msig_h <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>% distinct()
+hallmark <- split(msig_h$gene_symbol, msig_h$gs_name)
+
+# fgsea を実行（パラメータは最小セットサイズ10、最大500、perm=2000）
+fg <- fgsea(pathways = hallmark, stats = rank_stat, minSize = 10, maxSize = 500, nperm = 2000)
+fg_sig <- fg %>% arrange(padj) %>% head(20)
+fg_sig %>% dplyr::select(pathway, NES, padj) %>% head(10)
+```
+
+## 経路の可視化（例）
+```{r viz}
+# 最も有意な経路について、累積分布をプロット
+if (nrow(fg_sig) > 0) {
+  pathway_name <- fg_sig$pathway[1]
+  plotEnrichment(hallmark[[pathway_name]], rank_stat) +
+    ggtitle(pathway_name)
+}
+```
+
+# まとめ
+- `FindAllMarkers` によりクラスタごとのマーカー遺伝子を同定し、簡易なマーカー辞書を用いて注釈を付与した。  
+- 生カウント行列をクラスタ単位で合計することで**擬似バルク**データを作成し、edgeR の GLM により差分遺伝子解析を実施した。  
+- logFC に基づいて経路解析（GSEA）を行い、Hallmark セットの中で上昇・下降する経路を抽出した。  
+- 次章では、この擬似バルク結果を Bulk 解析結果と比較し、統合的なレポートを作成する。

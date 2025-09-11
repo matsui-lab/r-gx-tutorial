@@ -1,15 +1,136 @@
 ---
-title: "12_capstone_bulk_sc_report"
-format: html
-execute: {echo: true, warning: false, message: false}
+title: "第12回 まとめ：Bulk×sc の統合レポート（再現可能ワークフロー）"
+author: "Your Name"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+fontsize: 11pt
 ---
 
-# 目的
-Bulk × sc の要約レポート。入力・QC・統計・解釈の一気通貫。
+```{r setup, include=FALSE}
+# 再現性確保と描画設定
+set.seed(42)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
 
-- 入力データ
-- QC サマリ
-- DGE・GSEA の主要結果
-- WGCNA の所見
-- scRNA の注釈と擬似バルクの要点
-- 考察と限界
+# 必要パッケージを確認・インストール ----
+needs <- c("Seurat", "dplyr", "ggplot2", "pheatmap", "fgsea", "msigdbr", "tibble", "Matrix", "edgeR")
+to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) {
+  install.packages(setdiff(to_install, c("Seurat", "fgsea", "msigdbr", "edgeR")))
+  if ("Seurat" %in% to_install) install.packages("Seurat")
+  if ("fgsea" %in% to_install) install.packages("fgsea")
+  if ("msigdbr" %in% to_install) install.packages("msigdbr")
+  if ("edgeR" %in% to_install) install.packages("edgeR")
+}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(fgsea)
+library(msigdbr)
+library(tibble)
+library(Matrix)
+library(edgeR)
+```
+
+# 目的
+これまで学んだ Bulk RNA-seq 解析（第5〜6回）と単一細胞 RNA-seq 解析（第10〜11回）の成果物を統合し、両者の共通点および相違点を把握するためのレポート作成方法を示す。実際の Bulk データが手元に無い場合を想定し、第11回で得たクラスタ別擬似バルク差分解析結果を Bulk データの代替として用いる。なお、本章では再現可能性を意識し、中間生成物の再利用やワークフローの整理についても言及する。
+
+## データ読み込みと擬似バルク差分解析
+```{r load}
+# 前章で保存した pbmc オブジェクトを読み込む
+stopifnot(file.exists("pbmc_qc_norm_umap.rds"))
+pbmc <- readRDS("pbmc_qc_norm_umap.rds")
+
+# 擬似バルク用のカウント行列を再構築（詳細は第11章を参照）
+counts <- GetAssayData(pbmc, assay = "RNA", slot = "counts")
+clust <- pbmc$seurat_clusters
+levels(clust) <- sort(unique(as.numeric(clust)))
+pb_mat <- sapply(levels(clust), function(k) {
+  cols <- which(clust == k)
+  Matrix::rowSums(counts[, cols, drop = FALSE])
+})
+colnames(pb_mat) <- paste0("cluster", levels(clust))
+
+# 差分解析の例：クラスタ0とそれ以外を比較
+grp <- factor(c("target", rep("other", ncol(pb_mat) - 1)))
+y <- DGEList(counts = pb_mat, group = grp)
+y <- calcNormFactors(y)
+design <- model.matrix(~ grp)
+y <- estimateDisp(y, design)
+fit <- glmQLFit(y, design)
+qlf <- glmQLFTest(fit, coef = 2)
+de_tab <- as.data.frame(topTags(qlf, n = Inf))
+de_tab$gene <- rownames(de_tab)
+```
+
+## sc マーカーとの方向一致（遺伝子レベル）
+```{r overlap}
+# sc 側のマーカー（クラスタ0 vs その他）を改めて計算
+Idents(pbmc) <- pbmc$seurat_clusters
+sc_mk <- FindMarkers(pbmc, ident.1 = "0", min.pct = 0.25, logfc.threshold = 0.25)
+
+# 上昇方向（logFC > 0 かつ FDR<0.05）の遺伝子集合を定義
+bulk_up <- de_tab %>% filter(logFC > 0 & FDR < 0.05) %>% pull(gene)
+sc_up   <- rownames(sc_mk %>% filter(avg_log2FC > 0, p_val_adj < 0.05))
+inter_up <- intersect(bulk_up, sc_up)
+
+# 共通遺伝子数を出力
+length(inter_up)
+
+# 共通上昇遺伝子の表現を Heatmap で可視化（最大30遺伝子）
+sel <- head(inter_up, 30)
+if (length(sel) >= 2) {
+  mat <- as.matrix(GetAssayData(pbmc, slot = "data")[sel, ])
+  pheatmap(mat, show_rownames = TRUE, show_colnames = FALSE,
+           main = "Bulk↑ ∩ sc↑（代表30遺伝子）")
+} else {
+  message("共通遺伝子が少ないため、ヒートマップを省略します。")
+}
+```
+
+## 経路レベルの比較（GSEA）
+```{r gsea}
+# Bulk 側のランキング（logFC）
+rank_stat <- de_tab$logFC
+names(rank_stat) <- de_tab$gene
+rank_stat <- sort(rank_stat, decreasing = TRUE)
+
+# sc 側のランキング（平均 log2FC）
+sc_rank <- sc_mk$avg_log2FC
+names(sc_rank) <- rownames(sc_mk)
+sc_rank <- sort(sc_rank, decreasing = TRUE)
+
+# Hallmark 経路集合を取得
+msig_h <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>% distinct()
+hallmark <- split(msig_h$gene_symbol, msig_h$gs_name)
+
+# GSEA を両者で実行
+fg_bulk <- fgsea(pathways = hallmark, stats = rank_stat, minSize = 10, maxSize = 500, nperm = 2000)
+fg_sc   <- fgsea(pathways = hallmark, stats = sc_rank,   minSize = 10, maxSize = 500, nperm = 2000)
+
+# 有意経路（padj<0.05）の抽出と突合
+bulk_top <- fg_bulk %>% filter(padj < 0.05) %>% select(pathway, NES) %>% mutate(src = "bulk")
+sc_top   <- fg_sc   %>% filter(padj < 0.05) %>% select(pathway, NES) %>% mutate(src = "sc")
+merge_top <- merge(bulk_top, sc_top, by = "pathway", suffixes = c(".bulk", ".sc"))
+
+# 上位の経路を表示
+head(merge_top[order(-abs(merge_top$NES.bulk)), ], 10)
+```
+
+## 再現可能ワークフローのまとめ
+本章で示した統合解析を実施する際には、再現性を担保するために以下の点に留意する。
+
+- **入力データの固定**：Bulk と sc の元データ、メタデータ（サンプル情報、群ラベル）、および遺伝子 ID マッピング方法を明確にすること。
+- **解析環境の固定**：`renv` や Docker を利用して、R バージョンやパッケージ版数を固定する。これにより、将来的に環境が変わっても同じ結果が再現できる。
+- **中間生成物の保存**：各解析ステップ後にオブジェクト（例：`pbmc_qc_norm_umap.rds`）や結果テーブルを保存しておくと、後続解析や再解析の手間を大幅に削減できる。
+- **Bulk と sc の整合性評価**：遺伝子レベルでは DEGs の方向や重複を確認し、経路レベルでは NES（正規化エンリッチメントスコア）の一致・不一致を比較する。解釈には細胞組成の違い、バッチ効果、シーケンス深度差などの要因が影響することを明記する。
+- **レポート作成**：表や図を用いて Bulk と sc の結果を並列に提示し、共通点・相違点を読者が理解しやすいように整理する。統合解析の限界や今後の改善点についても記述する。
+
+## セッション情報
+```{r session}
+sessionInfo()
+```
