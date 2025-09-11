@@ -383,3 +383,22 @@ kable(rep, caption="QC summary (auto flags)")
 ```
 
 # 付録：関数スニペット集
+```{r helpers}
+qc_lib_detect <- function(se){
+  libsize <- colSums(assay(se, "counts"))
+  detected <- colSums(assay(se, "counts")>0)
+  data.frame(sample=colnames(se), libsize, detected)
+}
+qc_mt_fraction <- function(se, flag="is_mito"){
+  stopifnot(!is.null(rowData(se)[[flag]]))
+  lib <- colSums(assay(se, "counts"))
+  mt <- colSums(assay(se, "counts")[rowData(se)[[flag]], , drop=FALSE])
+  mt/lib
+}
+qc_pca <- function(se){
+  logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
+  prcomp(t(logcpm))
+}
+```
+
+> **まとめ**：QCは**排除**ではなく**モデル化**も選択肢。**設計式に落とす／補正の是非を検証**しながら、**透明な基準と記録**で再現性を担保しましょう。
