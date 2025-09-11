@@ -1,91 +1,305 @@
 ---
-title: "04_bulk_qc_core"
-author: "集中講義"
-format:
-  html:
-    toc: true
-    toc-depth: 3
-execute:
-  echo: true
-  warning: false
-  message: false
-editor: source
----
 
-# 目的
-本回では、**バルクRNA-seq のQC**（分布・外れ値・PCA・サンプル間相関）を最小構成で実施します。  
-以後の差次発現解析（回05）・遺伝子セット解析（回06）へ安全に接続できるよう、**行名/列名の整合とログ変換**を丁寧に確認します。
+title: "Bulk RNA-seq QC 実践ガイド：指標・手順・解釈・下流反映"
+author: "matsui-lab"
+date: "`r format(Sys.Date())`"
+output:
+html\_document:
+toc: true
+toc\_depth: 3
+toc\_float: true
+number\_sections: true
+pdf\_document:
+toc: true
+number\_sections: true
+editor\_options:
+chunk\_output\_type: inline
+---------------------------
 
-> 入力想定：`data/processed/airway_counts_small.csv` と `airway_meta_small.csv`（6サンプル×約500遺伝子）。
-
-## 0. セットアップ
-```r
-need <- c("readr","dplyr","ggplot2","pheatmap","here","tibble","tidyr")
-for (pkg in need) if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(ggplot2); library(pheatmap)
-  library(here);  library(tibble); library(tidyr)
+  library(SummarizedExperiment)
+  library(ggplot2)
 })
-dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
-dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
+set.seed(1)
 ```
 
-## 1. 入力と整形（**最重要：整合の保証**）
-```r
-cts  <- read_csv(here("data","processed","airway_counts_small.csv"), show_col_types = FALSE)
-meta <- read_csv(here("data","processed","airway_meta_small.csv"),  show_col_types = FALSE)
+# ねらい
 
-mat <- as.matrix(cts[ , -ncol(cts)])     # 末尾 'gene' を除く
-rownames(mat) <- cts$gene
-stopifnot(all(colnames(mat) %in% meta$sample_id))
-meta <- meta[match(colnames(mat), meta$sample_id), , drop = FALSE]
-stopifnot(identical(colnames(mat), meta$sample_id))
+* **QC とは何か／なぜ必要か**を整理する。
+* **前処理 → アライン／定量 → カウント表**までの段階ごとに QC 指標を列挙し、**実践フロー**を示す。
+* **解釈／しきい値の考え方**（万能の絶対値はない、分布と文脈で判断）。
+* **下流解析への反映**（サンプル除外・共変量化・正規化・バッチ補正・重み付け）。
+* **最小再現コード**と**テンプレ設計**を提供（実データ差し替え容易）。
 
-# 低発現の簡易フィルタ（例：>=10 を少なくとも2サンプル）
-keep <- rowSums(mat >= 10) >= 2
-mat_f <- mat[keep, ]
+> 本Rmdは **カウント表（遺伝子×サンプル）** と **`colData` サンプルメタ**がある前提で、**最終QC（count-level）** を中心に扱います。**read-level** の FastQC/MultiQC などは要点とチェック項目をまとめ、R内で参照・集約する雛形を付録に示します。
 
-# log1p でゼロ回避＋スケール圧縮
-logc <- log1p(mat_f)
+# QC とは何か／なぜ必要か
+
+**Quality Control (QC)** は、測定・処理の各段階でデータの**健全性・一貫性・妥当性**を検証し、
+
+* **故障・人為ミス・系統誤差**の早期検知
+* **除外基準**の設定（外れ試料）
+* **統計モデルへの反映**（共変量・ブロック・重み）
+  を行う作業です。QCは**除外するため**だけではなく、**説明変数として取り込む**ことで**推定のバイアスと分散**を改善します。
+
+# 段階別のQC全体像
+
+1. **Read-level（前処理前）**: FastQC → base quality, adapter, GC, duplication, overrepresented seq
+2. **Alignment/Quantification-level**: STAR/HISAT2/salmon 等のログ → mapping rate, unique rate, multimapping, rRNA率, intragenic/intergenic
+3. **Count-level（本Rmdの中心）**: ライブラリサイズ、検出遺伝子数、発現分布、ミトコンドリア遺伝子率、サンプル内相関、群内分散、バッチ指標、PCA/UMAP、クラスタリング、アウトライヤ検出
+
+> 重要：**1→2→3** の順に **早期に問題源を特定**し、必要なら**再実験／再ライブラリ**を検討します。count-levelだけでの対症療法は限界がある点に注意。
+
+# デモ用データの用意（玩具）
+
+```{r demo-data}
+# 1000 gene × 12 sample のラフな玩具データ
+G <- 1000; N <- 12
+mat <- matrix(rnbinom(G*N, mu = 50, size = 1), nrow = G, ncol = N,
+              dimnames = list(paste0("gene", 1:G), paste0("S", 1:N)))
+# Treat/Control + バッチA/B を想定
+col_anno <- S4Vectors::DataFrame(
+  sample_id = colnames(mat),
+  group = rep(c("Ctrl","Treat"), each = N/2),
+  batch = rep(c("A","B"), times = N/2),
+  RIN = round(rnorm(N, 8.5, 0.8), 1) # 例：RNA品質指標
+)
+se <- SummarizedExperiment(assays = list(counts = mat), colData = col_anno)
+# ミトコンドリア遺伝子の玩具フラグ
+rowData(se)$is_mito <- sample(c(TRUE, FALSE), G, replace = TRUE, prob = c(0.03, 0.97))
+se
 ```
 
-## 2. 分布と外れ値の初期スクリーニング
-```r
-df_long <- as.data.frame(logc) |>
-  tibble::rownames_to_column("gene") |>
-  tidyr::pivot_longer(-gene, names_to = "sample", values_to = "logc")
+# Count-level QC 指標とプロット
 
-p_box <- ggplot(df_long, aes(sample, logc)) +
-  geom_boxplot() + coord_flip() +
-  labs(title = "log1p(counts) by sample")
-p_box
-ggplot2::ggsave(here("results","fig","04_box_by_sample.png"), p_box, width=7, height=5)
+## ライブラリサイズ（総リード数）と検出遺伝子数
+
+```{r libsize-detected}
+libsize <- colSums(assay(se, "counts"))
+detected <- colSums(assay(se, "counts") > 0)
+qdf <- data.frame(sample = colnames(se), libsize, detected, group = colData(se)$group, batch = colData(se)$batch)
+
+# 棒／散布図
+op <- par(mfrow=c(1,2), mar=c(6,4,2,1))
+barplot(libsize, las = 2, main = "Library size")
+plot(libsize, detected, pch = 16, main = "Detected genes vs Library size"); abline(lm(detected~libsize), lty=2)
+par(op)
+summary(libsize); summary(detected)
 ```
 
-## 3. PCA（群分離・外れ候補の把握）
-```r
-pca <- prcomp(t(logc), scale. = TRUE)
-pca_df <- data.frame(pca$x[,1:2], sample = colnames(logc))
-p_pca <- ggplot(pca_df, aes(PC1, PC2, label = sample)) + geom_point(size=2) + geom_text(vjust=-0.7) +
-  labs(title="PCA on log1p(counts)")
-p_pca
-ggplot2::ggsave(here("results","fig","04_pca.png"), p_pca, width=6, height=5)
+**解釈**：
 
-# PCA スコアを保存（回05/06で参照可）
-readr::write_csv(pca_df, here("results","table","04_pca_scores.csv"))
+* **極端に小さいライブラリ**や**検出遺伝子が著しく少ない**サンプルは要注意（抽出失敗／過剰なフィルタ／定量異常）。
+* しきい値は**相対的**に（箱ひげの外・分布の裾）。**群・バッチで分けて比較**するのが実践的。
+
+## ミトコンドリア（mt）率／rRNA率（代理）
+
+```{r mito-rate}
+mt_rate <- colSums(assay(se, "counts")[rowData(se)$is_mito, , drop=FALSE]) / libsize
+boxplot(mt_rate ~ colData(se)$group, las = 2, main = "Mitochondrial fraction")
+summary(mt_rate)
 ```
 
-## 4. サンプル間相関（技術外れの検出）
-```r
-C <- cor(logc, method = "pearson")
-pheatmap(C, filename = here("results","fig","04_sample_correlation.png"))
+**解釈**：
+
+* 高 mt 率は RNA 断片化・ストレス・組織由来差などを反映。bulk では**一律の閾値**は難しく、**群間で偏り**がないかを見る。
+
+## サンプル間相関・クラスタリング・PCA
+
+```{r pca-corr}
+logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
+# 相関ヒートマップ用の距離（簡便版）
+D <- as.dist(1 - cor(logcpm))
+cl <- hclust(D)
+plot(cl, main = "Sample clustering (1 - Pearson r)")
+
+# PCA
+pc <- prcomp(t(logcpm))
+plot(pc$x[,1], pc$x[,2], pch=19,
+     xlab=sprintf("PC1 (%.1f%%)", 100*summary(pc)$importance[2,1]),
+     ylab=sprintf("PC2 (%.1f%%)", 100*summary(pc)$importance[2,2]),
+     main="PCA of log2(CPM+1)")
+text(pc$x[,1], pc$x[,2], labels = colnames(se), pos = 3, cex = 0.8)
 ```
 
-## 5. チェックリスト（提出用）
-- [ ] 列名（サンプル）と `meta$sample_id` は完全一致している。  
-- [ ] フィルタ後の遺伝子数・ライブラリサイズを記録した。  
-- [ ] PCA と相関で外れ候補のメモを残した（技術 or 生物学）。
-```r
-libsize <- colSums(mat_f)
-readr::write_csv(data.frame(sample = names(libsize), libsize), here("results","table","04_libsize.csv"))
+**解釈**：
+
+* **群が第一主成分で分離**していれば理想。
+* **バッチや実験日**が主軸を支配していれば、**共変量化 or 補正**を検討。
+* 明確な**孤立点**は原データ（ログ・実験ノート）に立ち返り、**除外**も選択肢。
+
+## バッチの影響の可視化
+
+```{r pca-by-batch}
+# 便宜的な可視化（色=group, 形=batch）
+plot(pc$x[,1], pc$x[,2], pch = ifelse(colData(se)$batch=="A", 16, 17),
+     xlab="PC1", ylab="PC2", main="PCA: color=group, shape=batch")
+cols <- ifelse(colData(se)$group=="Treat", "red", "black")
+points(pc$x[,1], pc$x[,2], col=cols, pch=ifelse(colData(se)$batch=="A", 1, 2), cex=1.5)
+legend("topright", legend=c("Ctrl","Treat","batchA","batchB"),
+       col=c("black","red","black","black"), pch=c(19,19,1,2))
 ```
+
+**解釈**：
+
+* 形状（バッチ）で分かれ、色（群）が混じる → **バッチ支配**の可能性。
+* 一方、色で分かれ、形が混ざっていれば **群効果が主**。
+
+## 雑音の高いサンプルの特定（leave-one-out 影響度）
+
+```{r loo-influence}
+# 各サンプルを一時的に除いてPC1分散がどれくらい変わるかの簡易スコア
+pc_full <- prcomp(t(logcpm))
+var1_full <- summary(pc_full)$importance[2,1]
+score <- sapply(1:ncol(logcpm), function(j){
+  pc_ <- prcomp(t(logcpm[ , -j]))
+  summary(pc_)$importance[2,1] - var1_full
+})
+barplot(score, las=2, main="Influence on PC1 variance (leave-one-out)")
+```
+
+**解釈**：
+
+* スコアが極端に負（除くと分散が増える）なら、そのサンプルが**構造を曖昧にしている**可能性。
+
+# 実践フロー（count-level 以降）
+
+1. **基礎QC**：`libsize / detected / mt率 / PCA` を**群・バッチ別**に確認
+2. **外れ候補の一次抽出**：
+
+   * 著しく小さいライブラリ、極端mt率、クラスタ外れ
+   * ログやMultiQCの**上流ログ**と突合（機械/担当/日付）
+3. **決定**：
+
+   * **除外**（明確な失敗）
+   * **共変量として保持**（バッチ、RIN、ライブラリサイズのオフセット 等）
+   * **補正**（Combat/SVA, removeBatchEffect など）
+4. **設計式へ反映**：
+
+   * 例：`~ batch + RIN + group`（群効果が主目的）
+   * DESeq2 のサイズ因子、edgeR のオフセットで**ライブラリ規模**はモデル化
+5. **再QC**：補正後に PCA/ヒートマップを再確認（過補正に注意）
+
+# 下流解析への反映（コード骨格）
+
+## DESeq2（設計式でQC指標を共変量化）
+
+```{r deseq2, eval=FALSE}
+# BiocManager::install("DESeq2")
+library(DESeq2)
+colData(se)$batch <- factor(colData(se)$batch)
+colData(se)$RIN <- as.numeric(colData(se)$RIN)
+# 例：群効果を推定したい → バッチとRINを調整
+dds <- DESeqDataSet(se, design = ~ batch + RIN + group)
+dds <- dds[rowSums(counts(dds)>=10) >= (ncol(dds)/3), ]  # 低発現フィルタ
+dds <- DESeq(dds)
+res <- results(dds, name = "group_Treat_vs_Ctrl")
+res <- lfcShrink(dds, coef = "group_Treat_vs_Ctrl", type = "apeglm")
+```
+
+## limma-voom + removeBatchEffect
+
+```{r limma-voom, eval=FALSE}
+# BiocManager::install(c("limma","edgeR"))
+library(edgeR); library(limma)
+y <- DGEList(counts = assay(se, "counts"))
+y <- calcNormFactors(y)
+design <- model.matrix(~ batch + RIN + group, data = as.data.frame(colData(se)))
+vo <- voom(y, design)
+fit <- lmFit(vo, design) |> eBayes()
+# 可視化用に群だけの効果を見る残差表現
+expr_adj <- removeBatchEffect(vo$E, batch = colData(se)$batch, covariates = colData(se)$RIN, design = model.matrix(~ group, as.data.frame(colData(se))))
+plot(prcomp(t(expr_adj))$x[,1:2], main = "PCA after batch/RIN adjustment")
+```
+
+## sva/Combat（バッチ補正）
+
+```{r sva, eval=FALSE}
+# BiocManager::install("sva")
+library(sva)
+logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
+mod <- model.matrix(~ group, data = as.data.frame(colData(se)))
+expr_bc <- ComBat(dat = logcpm, batch = colData(se)$batch, mod = mod, par.prior = TRUE)
+# expr_bc を可視化/下流へ（注意：DEモデリングには raw → 正規化一貫）
+```
+
+# しきい値・判断の指針（実務的メモ）
+
+* **しきい値は相対・分布基準**：箱ひげ外・MAD>3 等。群・バッチを分けて相対比較。
+* **外れ＝即除外ではない**：**一貫して異常**（MT率極端 + ライブラリ極小 + クラスタ外れ）であれば除外寄り。
+* **説明変数としてのQC**：RIN/バッチ/担当/日付/ライブラリ調製キットなどは**設計式に入れる**。
+* **過補正に注意**：群効果まで打ち消さないよう、**設計式 or 可視化で確認**。
+* **再現性**：決定基準を `metadata(se)$qc_decision` に**文字列で記録**する。
+
+# 事例集（テンプレ）
+
+## 事例1：外れ1サンプルを除外して再解析
+
+```{r case1}
+# 仮に最小ライブラリの1試料を除外
+j_out <- which.min(libsize)
+se1 <- se[, -j_out]
+# PCA再計算
+logcpm1 <- log2(t(t(assay(se1, "counts"))/colSums(assay(se1, "counts"))*1e6) + 1)
+plot(prcomp(t(logcpm1))$x[,1:2], main = sprintf("PCA after dropping %s", colnames(se)[j_out]))
+```
+
+**示唆**：除外で群分離が改善・安定するなら、**除外判断の妥当性**の一助。
+
+## 事例2：RIN を連続共変量に入れる
+
+```{r case2, eval=FALSE}
+# DESeq2 例：design = ~ batch + RIN + group
+# RIN係数の符号・有意性も確認し、品質の影響を定量化
+```
+
+## 事例3：バッチ補正後の差次的発現
+
+```{r case3, eval=FALSE}
+# limma-voom + removeBatchEffect を用い、可視化は補正後、推定は設計式ベースで整合
+```
+
+# 上流（read-/align-level）QC チェックリスト（要点）
+
+* **FastQC/MultiQC**：per-base quality（3' 低下の度合い）、adapter contamination、duplication、overrepresented sequences、GC分布
+* **アラインログ**：総リード・マッピング率・ユニーク率・マルチマップ率・rRNA/mt 割合・intragenic/intergenic・5'/3' coverage bias
+* **設計との整合**：群・バッチの入れ子（confounding）を避けたサンプリング計画になっているか
+* **メタ情報**：抽出キット、ライブラリ調製法、担当者、装置、ラン日付は `colData` に入れておく
+
+## MultiQC 結果の R への取り込み（雛形）
+
+```{r multiqc, eval=FALSE}
+# MultiQC の aggregated report（tsv/json）を読み込み、sample_idで colData と join
+multiqc <- read.csv("multiqc_general_stats.txt", sep="\t")
+# colData(se) <- cbind(colData(se), multiqc[match(colData(se)$sample_id, multiqc$Sample), c("percent_gc","avg_sequence_length")])
+```
+
+# 最低限の運用約束（ラボ標準）
+
+* **解析開始前にQC項目と決定基準のドラフト**を合意（例：外れ候補の自動フラグ → 最終は人が判断）。
+* **QCの痕跡を残す**：`metadata(se)$qc_metrics` にリストで指標・図のパス・決定理由を保存。
+* **版管理**：QC後の SE を `saveRDS()` し、ファイル名に日付・決定を含める。
+
+# 付録：関数スニペット集
+
+```{r helpers}
+qc_lib_detect <- function(se){
+  libsize <- colSums(assay(se, "counts"))
+  detected <- colSums(assay(se, "counts")>0)
+  data.frame(sample=colnames(se), libsize, detected)
+}
+qc_mt_fraction <- function(se, flag="is_mito"){
+  stopifnot(!is.null(rowData(se)[[flag]]))
+  lib <- colSums(assay(se, "counts"))
+  mt <- colSums(assay(se, "counts")[rowData(se)[[flag]], , drop=FALSE])
+  mt/lib
+}
+qc_pca <- function(se){
+  logcpm <- log2(t(t(assay(se, "counts"))/colSums(assay(se, "counts"))*1e6) + 1)
+  prcomp(t(logcpm))
+}
+```
+
+> **まとめ**：QCは**排除**ではなく**モデル化**も選択肢。**設計式に落とす／補正の是非を検証**しながら、**透明な基準と記録**で再現性を担保しましょう。
