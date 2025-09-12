@@ -1,5 +1,5 @@
 ---
-title: "Bulk RNA-seq: DGE解析 + バッチ/共変量  実践ガイド"
+title: "Bulk RNA-seq DGE：全体像→設計→実行→解釈（初心者のための一体型ガイド）"
 author: "matsui-lab"
 date: "`r format(Sys.Date())`"
 output:
@@ -16,445 +16,239 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width=7, fig.height=4.5)
 suppressPackageStartupMessages({
   library(SummarizedExperiment)
-  # library(DESeq2)   # 実行例は eval=FALSE で記載
-  # library(edgeR)
-  # library(limma)
+  # library(DESeq2)    # 実行環境に応じて有効化（重い処理は eval=FALSE）
+  # library(edgeR); library(limma)
 })
 set.seed(1)
 ```
 
-# この資料のねらい
-- **DGE（Differential Gene Expression）** の**目的**・**前提**・**全体像**を押さえる。
-- 主要手法（DESeq2 / edgeR / limma-voom）の**考え方と比較**を俯瞰し、**DESeq2** に焦点を当てて**モデルの原理**と**実装手順**を解説。
-- **設計式（デザイン行列）** を中心に、**バッチ**や**連続共変量**、**交互作用**、**ペア設計**など**現実の実験デザイン**へ拡張する方法を提示。
-- **出力の解釈**（effect size, FDR, 方向性）、**可視化**、**診断**（外れ・Cook’sディスタンス）まで含む**実戦レシピ**集。
+# 0. まず全体像（このRmdの読み方）
+本資料は**一つの物語**として進みます。前半（0〜4章）で**全体像**と**基本ワークフロー**を体験し、後半（5章以降）で**実験設計の分岐**（バッチ・共変量・交互作用・ペア・多群）と**結果の解釈を深掘り**します。\
+途中で出てくる「チェックポイント」は、**初心者がつまずきやすい箇所**を先回りして確認するためのものです。
 
-> ここでは主に **count-level** の DGE を扱います。前段のQCは `04_bulk_qc_core.Rmd` を参照。
+# 1. データと目的を定義する
+**目的**：Ctrl vs Treat の**差次的発現（DGE）**を統計的に検出し、効果量（log2FC）と不確実性（SE, FDR）を解釈できるようにする。
 
-# DGE の目的と全体ワークフロー
-**目的**：群間・条件間で**体系的に発現が変動**する遺伝子を、**統計的に有意**かつ**効果量とともに**同定する。
+```{r demo-data}
+# 1) デモ用 SummarizedExperiment（800 gene × 12 sample）
+G <- 800; N <- 12
+mat <- matrix(rnbinom(G*N, mu=50, size=1), nrow=G, ncol=N,
+              dimnames=list(paste0("gene",1:G), paste0("S",1:N)))
+col_anno <- S4Vectors::DataFrame(
+  sample = paste0("S",1:N),
+  group  = rep(c("Ctrl","Treat"), each=N/2),
+  batch  = rep(c("A","B"), times=N/2),
+  RIN    = round(rnorm(N, 8.5, 0.6), 1)
+)
+se <- SummarizedExperiment(assays=list(counts=mat), colData=col_anno)
 
-**前提**：
-- カウント表（遺伝子 × サンプル）と `colData`（群・バッチ等）
-- 適切な **ライブラリサイズ補正**（DESeq2/edgeR は内部でモデル化）
-- QC済み（外れ候補の処理、設計式検討）
+# 疑似DE（Treatで20遺伝子を2倍）
+idx <- sample(1:G, 20)
+assay(se, "counts")[idx, colData(se)$group=="Treat"] <-
+  round(assay(se, "counts")[idx, colData(se)$group=="Treat"] * 2)
+se
+```
 
-**全体像**：
-1. デザインの明確化（目的の効果と調整すべき要因）
-2. フィルタリング（低発現の除外）
-3. 正規化／オフセットの推定（サイズ因子）
-4. 分散・平均の関係の推定（分散縮約）
-5. 対比（contrast）の設定と検定（Wald / LRT 等）
-6. 多重検定補正（FDR）
-7. 診断・可視化・生物学的解釈（アノテ・GSEA 等）
+**チェックポイント**（ここで確認）
+- 行=遺伝子、列=サンプルか？ `assay(se, "counts")` の**行名/列名がユニーク**か？
+- `colData(se)` に**群やバッチ等の説明変数**が揃っているか？
 
-# 主要手法の比較（要点）
-- **DESeq2**：負の二項回帰（NB GLM）、**サイズ因子**でライブラリ規模をモデル化、**分散のEmpirical Bayes縮約**、**Wald検定**（係数）/ **LRT**（モデル比較）、**LFC縮約**（`apeglm`/`ashr`）。小規模でも堅牢。DESeq2パッケージはカウントデータの分散-平均依存性を推定し、負の二項分布モデルを用いて差次的発現を検定する【56786557253194†L7-L10】。
-- **edgeR**：NB GLM、**TMM** 正規化、**分散推定**（common/trended/tagwise）と **対比**が柔軟、古典的だが今も強力。
-- **limma-voom**：logCPMに変換し**mean-variance**を**voom重み**で扱う線形モデル。サンプル数が多めで特に高性能、設計式が直感的。
+# 2. QCの要点だけを先に（なぜ→何を見るか→次に何をするか）
+- **ライブラリサイズ**／**検出遺伝子数**：極端な小ささは要注意
+- **ミトコンドリア率**（bulkは参考指標）
+- **PCA / クラスタリング**：群やバッチでの分離をざっくり把握
 
-# DESeq2 のモデル原理（骨子）
-- 観測カウント $K_{ij}$（遺伝子 $i$, サンプル $j$）は **NB**：$K_{ij} \sim \text{NB}(\mu_{ij}, \alpha_i)$。
-- 期待値 $\mu_{ij} = s_j \cdot q_{ij}$。$s_j$ は**サイズ因子**（ライブラリ規模）、$q_{ij}$ は**真の相対発現**。
-- 線形予測子：$\log(q_{ij}) = x_j^\top \beta_i$（設計行列 $X$ と遺伝子別係数 $\beta_i$）。
-- $\alpha_i$（分散）は遺伝子別に推定し、**平均に対する曲線**へ**収縮**（shrinking）。
-- 検定：係数の **Wald**（特定効果） or **LRT**（入れ子モデル比較）。
-- **独立フィルタリング**：低平均の遺伝子を自動除外し検出力を向上（FDR制御と両立）。
-- **LFC縮約**：効果量（log2FoldChange）の推定不確実性を縮小し、**火山図の過大評価**を防ぐ。
+```{r quick-qc}
+libsize  <- colSums(assay(se, "counts"))
+detgenes <- colSums(assay(se, "counts") > 0)
+op <- par(mfrow=c(1,2), mar=c(5,4,2,1))
+barplot(libsize, las=2, main="Library size")
+plot(libsize, detgenes, pch=16, main="Detected vs Library"); abline(lm(detgenes~libsize), lty=2)
+par(op)
 
-# 標準ワークフロー（DESeq2）
+# 軽量版 log2CPM → PCA（探索）
+logcpm <- log2(t(t(assay(se, "counts"))/libsize)*1e6 + 1)
+pc <- prcomp(t(logcpm))
+plot(pc$x[,1], pc$x[,2], pch=19, xlab="PC1", ylab="PC2", main="PCA (log2CPM)")
+text(pc$x[,1], pc$x[,2], labels=colnames(se), pos=3, cex=.8)
+```
 
-## 最小実行例（骨格：2群比較）
-```{r deseq2-basic, eval=FALSE}
-# BiocManager::install("DESeq2")
+**チェックポイント**
+- 明らかな**外れ**があれば、実験ログやMultiQCログと付き合わせる。
+- 除外の前に、後述の**設計式で調整（バッチや共変量）**できるかを検討。
+
+# 3. 設計式（design）の考え方：調整→目的効果
+**原則**：設計式は「**調整因子を左に**、**目的の効果を右端に**」。\
+例）「群差が主目的で、既知バッチ A/B を調整」→ `~ batch + group`。\
+この並びは**係数の解釈**と**contrast指定**を明確にします。
+
+# 4. 最小ワークフローを一度だけ通す（2群・バッチ無）
+以下は**最小の一周**です。まずは「DGEはこう流れる」を体験し、その後で設計の分岐に進みます。
+
+```{r dge-minimal, eval=FALSE}
 library(DESeq2)
-# se: SummarizedExperiment（assay "counts" が raw counts）
-colData(se)$group <- factor(colData(se)$group, levels=c("Ctrl","Treat"))
-dds <- DESeqDataSet(se, design = ~ group)
-# 低発現フィルタ（例：少なくとも n/3 サンプルでカウント>=10）
-dds <- dds[rowSums(counts(dds)>=10) >= ceiling(ncol(dds)/3), ]
-# 推定
-dds <- DESeq(dds)
-res <- results(dds, name = "group_Treat_vs_Ctrl")
-# 効果量縮約（推奨）
+se_min <- se
+# 低発現フィルタ（例： n/3 サンプルで >=10）
+keep <- rowSums(assay(se_min,"counts") >= 10) >= ceiling(ncol(se_min)/3)
+se_min <- se_min[keep, ]
+
+# 目的：Ctrl vs Treat
+colData(se_min)$group <- relevel(factor(colData(se_min)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_min, design = ~ group)  # 設計式の骨格
+dds <- DESeq(dds)                              # サイズ因子→分散→NB GLM→検定
+res <- results(dds, name="group_Treat_vs_Ctrl")
 res_shr <- lfcShrink(dds, coef="group_Treat_vs_Ctrl", type="apeglm")
-# 上位を閲覧
+
+plotMA(res_shr, ylim=c(-4,4))
+vsd <- vst(dds, blind=TRUE); plotPCA(vsd, intgroup="group")
 head(as.data.frame(res_shr)[,c("log2FoldChange","lfcSE","pvalue","padj")])
 ```
 
-## 可視化（MA・火山図・PCA）
-```{r viz, eval=FALSE}
-plotMA(res, ylim=c(-4,4))
-# 火山図（簡易）
-res_df <- as.data.frame(res_shr)
-with(res_df, plot(log2FoldChange, -log10(padj), pch=16, main="Volcano (shrunk LFC)"))
-# PCA
+**ここまでの意味**：
+- **DESeq()** が内部で行うこと＝**サイズ因子**推定→**分散**推定→**NB GLM**当てはめ→**検定（Wald/LRT）**。
+- **lfcShrink()** は LFC の**不確実性を縮約**し、効果量の**安定解釈**を助ける。
+
+---
+
+# 5. 設計の分岐を**前半フローに溶かし込む**
+以降は**4章の最小ワークフロー**に**1行ずつ要素を足す**だけで進みます。初心者は「必要な分岐だけを採用」してください。
+
+## 5.1 既知バッチを調整：`~ batch + group`
+```{r design-batch, eval=FALSE}
+library(DESeq2)
+se_b <- se
+keep <- rowSums(assay(se_b,"counts") >= 10) >= ceiling(ncol(se_b)/3)
+se_b <- se_b[keep, ]
+
+colData(se_b)$batch <- factor(colData(se_b)$batch)
+colData(se_b)$group <- relevel(factor(colData(se_b)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_b, design = ~ batch + group)  # ← 最小例に「batch」を左側へ追加
+dds <- DESeq(dds)
+res <- results(dds, name="group_Treat_vs_Ctrl")
+
+# 診断：バッチ影響が軽減されたか？
 vsd <- vst(dds, blind=TRUE)
 plotPCA(vsd, intgroup=c("group","batch"))
 ```
 
-## 連続共変量/バッチの取り扱い（設計式）
-```{r design-covariates, eval=FALSE}
-colData(se)$batch <- factor(colData(se)$batch)
-colData(se)$RIN <- as.numeric(colData(se)$RIN)
-# 群効果を主目的 → バッチ・RINを調整
-dds <- DESeqDataSet(se, design = ~ batch + RIN + group)
+**重要**：**完全交絡**（例：BatchA=Ctrlのみ）は推定不能。設計段階の工夫が必要です。
+
+## 5.2 連続共変量を調整：`~ RIN + group`
+```{r design-cov, eval=FALSE}
+library(DESeq2)
+se_c <- se
+keep <- rowSums(assay(se_c,"counts") >= 10) >= ceiling(ncol(se_c)/3)
+se_c <- se_c[keep, ]
+
+colData(se_c)$RIN   <- as.numeric(colData(se_c)$RIN)
+colData(se_c)$group <- relevel(factor(colData(se_c)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_c, design = ~ RIN + group)  # ← 共変量を左に
 dds <- DESeq(dds)
-res <- results(dds, name = "group_Treat_vs_Ctrl")
+res <- results(dds, name="group_Treat_vs_Ctrl")
 ```
 
-## 交互作用（例：群×時間）
-```{r interaction, eval=FALSE}
-# group: Ctrl/Treat, time: 0h/24h/48h（因子）
-colData(se)$time <- factor(colData(se)$time, levels=c("0h","24h","48h"))
-dds <- DESeqDataSet(se, design = ~ batch + group * time)  # 主効果 + 交互作用
-# 交互作用の検定（時間変化の群依存性）
-dds <- DESeq(dds, test="LRT", reduced=~ batch + group + time)
+**使い分け**：`~ batch + RIN + group` のように**複数の調整**も可。係数の符号と有意性で妥当性を確認。
+
+## 5.3 交互作用：`~ batch + group * time`
+```{r design-interaction, eval=FALSE}
+library(DESeq2)
+se_i <- se
+keep <- rowSums(assay(se_i,"counts") >= 10) >= ceiling(ncol(se_i)/3)
+se_i <- se_i[keep, ]
+
+# 例：簡易に time 因子を付与
+colData(se_i)$time  <- factor(rep(c("0h","24h","48h"), length.out=ncol(se_i)))
+colData(se_i)$group <- relevel(factor(colData(se_i)$group), ref="Ctrl")
+colData(se_i)$batch <- factor(colData(se_i)$batch)
+
+dds <- DESeqDataSet(se_i, design = ~ batch + group * time)
+dds <- DESeq(dds, test="LRT", reduced = ~ batch + group + time)  # 交互作用有無の一括検定
 res_int <- results(dds)
-# 特定の時間点での群差（contrast）
+
+# 特定時間点での群差（複合contrast）
+dds <- DESeq(dds)                                # Wald で係数名を使う場合は再実行
+resultsNames(dds)
 res_24 <- results(dds, contrast=list(c("group_Treat_vs_Ctrl","groupTreat.time24h")))
 ```
 
-## ペア設計（被験者内比較）
-```{r paired, eval=FALSE}
-# subject毎に before/after を測定
-colData(se)$subject <- factor(colData(se)$subject)
-colData(se)$condition <- relevel(factor(colData(se)$condition), ref="before")
-dds <- DESeqDataSet(se, design = ~ subject + condition)  # ブロック効果
+**Tips**：`group * time` は `group + time + group:time`。係数名は `resultsNames(dds)` で必ず確認。
+
+## 5.4 ペア設計（被験者内比較）：`~ subject + condition`
+```{r design-paired, eval=FALSE}
+library(DESeq2)
+se_p <- se
+keep <- rowSums(assay(se_p,"counts") >= 10) >= ceiling(ncol(se_p)/3)
+se_p <- se_p[keep, ]
+
+# 疑似subject/condition（各subjectにbefore/after）
+colData(se_p)$subject   <- factor(rep(1:(ncol(se_p)/2), each=2))
+colData(se_p)$condition <- factor(rep(c("before","after"), times=ncol(se_p)/2))
+colData(se_p)$condition <- relevel(colData(se_p)$condition, ref="before")
+
+dds <- DESeqDataSet(se_p, design = ~ subject + condition)  # subjectはブロック
 dds <- DESeq(dds)
 res <- results(dds, name="condition_after_vs_before")
 ```
 
-## 多群（ANOVA型）
-```{r multi-group, eval=FALSE}
-# 3群 A/B/C → まず全体差を LRT で検定
-dds <- DESeqDataSet(se, design = ~ batch + group)
-dds <- DESeq(dds, test="LRT", reduced=~ batch)
+## 5.5 多群（ANOVA型）→ ペア対比へ
+```{r design-multigroup, eval=FALSE}
+library(DESeq2)
+se_m <- se
+keep <- rowSums(assay(se_m,"counts") >= 10) >= ceiling(ncol(se_m)/3)
+se_m <- se_m[keep, ]
+
+colData(se_m)$grp3 <- factor(rep(c("A","B","C"), length.out=ncol(se_m)))
+dds <- DESeqDataSet(se_m, design = ~ grp3)
+dds <- DESeq(dds, test="LRT", reduced=~1)     # 全体差
 res_all <- results(dds)
-# その後、ペアのコントラスト（B vs A, C vs A など）を個別に
-res_BA <- results(dds, contrast=c("group","B","A"))
-res_CA <- results(dds, contrast=c("group","C","A"))
+
+dds <- DESeq(dds)                              # Waldでペア差へ
+res_BA <- results(dds, contrast=c("grp3","B","A"))
+res_CA <- results(dds, contrast=c("grp3","C","A"))
 ```
 
-# 結果の読み解き方
-- **`log2FoldChange`（効果量）**：`apeglm/ashr` で縮約後を推奨。符号は `contrast` の順序に依存。
-- **`padj`（FDR）**：0.05を起点に、**生物学的閾値**（|LFC| ≥ 1 など）と**併用**。
-- **独立フィルタ**の影響：低平均の遺伝子ほど検出力が低い→自動で除外されうる。
-- **外れサンプル/高影響点**：`cooks`（Cook’sディスタンス）で診断、必要に応じて `minReplicatesForReplace` や再QC。
+# 6. 検定結果を**どう読むか**（初心者むけの順番）
+1. **目的の係数/contrast**を決める（`resultsNames()`で確認）。\
+2. **効果量（log2FC）**と**padj（FDR）**を並べて眺める。\
+3. **火山図/MA**で全体感を掴む → 上位遺伝子の**normalized counts**を群別に確認。
 
-```{r diagnostics, eval=FALSE}
-par(mfrow=c(1,2))
-plot(metadata(dds)$dispersionFunction)
-plot(counts(dds, normalized=TRUE)[which.max(abs(res$log2FoldChange)),], pch=16,
-     ylab="normalized counts", main="Top DE gene (check spread)")
+```{r viz-interpret, eval=FALSE}
+plotMA(res)                                    # or plotMA(res_shr)
+res_df <- as.data.frame(res)
+with(res_df, plot(log2FoldChange, -log10(padj), pch=16, main="Volcano"))
+# 上位遺伝子のカウント（直観の確認）
+top <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene=top, intgroup="group")
 ```
 
-# よくある設計式レシピ集
-- **群だけ**：`~ group`
-- **群 + バッチ**：`~ batch + group`
-- **群 + 連続共変量**：`~ cov + group`
-- **群 × 時間**：`~ group * time`（主効果+交互作用）
-- **被験者内ペア**：`~ subject + condition`
-- **複数バッチ**（装置×日など）：`~ machine + date + group`（**完全交絡**に注意）
+**注意**：LFC縮約後の値を**解釈の中心**に。検出力だけでなく**実学的な大きさ**（例：|LFC|≥1）も併記。
 
-> **完全交絡**（例：バッチAがCtrlのみ、バッチBがTreatのみ）は**群効果とバッチ効果が分離不能**。設計段階で回避、既に発生している場合は**推定不能**である旨を明記。
+# 7. よくある落とし穴と回避法（統合版）
+- **交絡**：`table(group,batch)` に0セルが多い→**推定不能**。設計で避ける。\
+- **因子レベル**：`relevel()` の**基準**で符号が変わる。\
+- **過補正**：`removeBatchEffect/ComBat`は可視化用途、**推定は設計式**で。\
+- **フィルタ**：低発現を除くが、除外基準はメモ（`metadata` やノート）。\
+- **再現性**：`sessionInfo()` と `metadata(dds)` に主要決定を記録。
 
-# バッチの扱い：設計式 vs 補正
-- **原則**：**目的効果（群差）をモデル化**し、その他の系統差（バッチ/担当/日付/RIN）を**共変量として設計式に入れる**のが第一選択。
-- **補正（表現値の変換）**：可視化や探索では `removeBatchEffect`/ComBat も有用。ただし**推定（検定）**は**設計式ベース**で一貫させるのが安全。
-- **sva**（潜在バッチ）：`svaseq` で潜在因子を推定し `design = ~ sv1 + sv2 + group` のように組み込む。
+# 8. チェックリスト（コピーして使う）
+- [ ] カウント・`colData`・（必要なら`rowData`）は**ID整合**している
+- [ ] 設計式は**調整→目的効果**の順で書いた
+- [ ] `resultsNames()` で係数名を確認し、`contrast` を明示
+- [ ] 可視化は**vst()/rlog()** や**log2CPM**で、推定は**raw→モデル**で一貫
+- [ ] 主要判断（外れ・閾値・設計変更）を**記録**
 
-```{r sva, eval=FALSE}
-# BiocManager::install("sva")
-library(sva)
-vsd <- vst(dds)
-mod <- model.matrix(~ group, data = as.data.frame(colData(vsd)))
-mod0 <- model.matrix(~ 1, data = as.data.frame(colData(vsd)))
-sv <- svaseq(assay(vsd), mod, mod0)$sv
-colData(dds)[, paste0("sv", seq_len(ncol(sv)))] <- sv
-design(dds) <- ~ . + sv1 + sv2 + group
-dds <- DESeq(dds)
-```
-
-# 実データ（airway）の完全レシピ（再現用）
-```{r airway, eval=FALSE}
-# BiocManager::install(c("airway","DESeq2"))
-library(airway); library(DESeq2)
-data("airway")
-se <- airway
-# condition: trt/unt
-colData(se)$condition <- relevel(colData(se)$dex, ref="untrt")
-# ここでは単純化しバッチ等は無し
-dds <- DESeqDataSet(se, design = ~ condition)
-dds <- dds[rowSums(counts(dds)>=10) >= (ncol(dds)/3),]
-dds <- DESeq(dds)
-res <- lfcShrink(dds, coef="condition_trt_vs_untrt", type="apeglm")
-plotMA(res)
-plotPCA(vst(dds), intgroup="condition")
-# 上位遺伝子のカウント可視化
-plotCounts(dds, gene=which.max(res$log2FoldChange), intgroup="condition")
-```
-
-# 出力の利用：下流解析への橋渡し
-- **アノテーション結合**：`rowData` に gene symbol / biotype / 長さ等を join
-- **集合解析**：GSEA/ORA（`fgsea`, `clusterProfiler`）
-- **ネットワーク**：WGCNA や相関ネットワークの種として使用
-- **保存**：`write.csv(as.data.frame(res), "dge_deseq2_result.csv")`
-
-# 実務のベストプラクティス
-- 解析開始前に **仮説（効果）と共変量** を紙に書き、**設計式を先に決める**。
-- **QCフラグ**（`04_`の `qc_flag_any`）は**自動＝候補**。最終はログ確認→人判断→`metadata`に記録。
-- **効果量重視**：FDRだけでなく**LFCしきい値**を設け、実学的に意味のあるDEGを選ぶ。
-- **再現性**：セッション情報・パッケージ版を `sessionInfo()` で保存。
-
-# 付録：小さな玩具データで全手順を一気通貫
-```{r toy-end2end}
-# 例として 800gene × 8sample のNB玩具データ
-g <- 800; n <- 8
-cts <- matrix(rnbinom(g*n, mu=50, size=1), nrow=g, ncol=n,
-              dimnames=list(paste0("gene",1:g), paste0("S",1:n)))
-cd <- S4Vectors::DataFrame(group=rep(c("Ctrl","Treat"), each=n/2),
-                           batch=rep(c("A","B"), times=n/2))
-se <- SummarizedExperiment(assays=list(counts=cts), colData=cd)
-
-# 疑似DEを作る（Treatで20遺伝子を2倍に）
-idx <- sample(1:g, 20)
-assay(se, "counts")[idx, cd$group=="Treat"] <- round(assay(se, "counts")[idx, cd$group=="Treat"] * 2)
-
-# DESeq2風の前処理と可視化（ここではモデル本体は重いので省略）
-lib <- colSums(assay(se, "counts"))
-logcpm <- log2(t(t(assay(se, "counts"))/lib)*1e6 + 1)
-plot(prcomp(t(logcpm))$x[,1:2], pch=19, main="Toy PCA (log2CPM)")
-text(prcomp(t(logcpm))$x[,1:2], labels=colnames(se), pos=3, cex=.8)
-```
-
-> **まとめ**：DGE解析は**設計式が命**。DESeq2の**NB GLM + 分散縮約 + LFC縮約**という枠組みを軸に、**バッチ/共変量/交互作用/ペア**など現実の設計へ拡張し、**QC→設計→検定→可視化→解釈**を一貫した痕跡で運用しましょう。
-
-# 付録：設計式レシピ **実践編（例題つき）**
-
-> ここでは、前節「よくある設計式レシピ集」を**そのまま動かせる最小例**としてまとめます。各小節は、
-> 1) **目的** 2) **前提/入力** 3) **コード** 4) **重要な関数と処理内容** 5) **使い方の要点** の順に記載。
-> 実行負荷の高い箇所は `eval=FALSE` とし、実データへ差し替える場合の注意を併記します。
-
-## 共通：デモ用 SE の用意とヘルパ
-```{r demo-common}
-set.seed(42)
-suppressPackageStartupMessages({library(SummarizedExperiment)})
-# 800 gene × 12 sample, Ctrl/Treat 各6。Batch A/B。RINを連続共変量。
-g <- 800; n <- 12
-cts <- matrix(rnbinom(g*n, mu = 50, size = 1), nrow = g,
-              dimnames = list(paste0("gene",1:g), paste0("S",1:n)))
-cd  <- S4Vectors::DataFrame(
-  sample    = colnames(cts),
-  group     = rep(c("Ctrl","Treat"), each = n/2),
-  batch     = rep(c("A","B"), times = n/2),
-  RIN       = round(rnorm(n, 8.5, 0.6), 1)
-)
-se0 <- SummarizedExperiment(assays = list(counts = cts), colData = cd)
-
-# 疑似DE（Treatで20遺伝子の発現を2倍に）
-idx <- sample(1:g, 20)
-assay(se0, "counts")[idx, cd$group=="Treat"] <- round(assay(se0, "counts")[idx, cd$group=="Treat"] * 2)
-
-# 低発現フィルタの共通関数（簡便版）
+# 9. 付録：最小ヘルパ関数
+```{r helpers}
 keep_min_counts <- function(se, min_count=10, min_samples=NULL){
   if (is.null(min_samples)) min_samples <- ceiling(ncol(se)/3)
   se[rowSums(assay(se,"counts") >= min_count) >= min_samples, ]
 }
 ```
-**重要関数**：`SummarizedExperiment()`（器）、`rowSums()`（フィルタ）、`assay()`/`colData()`（アクセサ）
 
----
-
-## ① 二群比較：`~ group`
-**目的**：Ctrl vs Treat の差（主効果）
-
-**前提**：群以外の大きな系統差がない／あるいはサンプル数が十分で群が第一関心事
-
-```{r recipe1, eval=FALSE}
-suppressPackageStartupMessages({library(DESeq2)})
-se <- keep_min_counts(se0)
-colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
-# 構築 → 推定
-dds <- DESeqDataSet(se, design = ~ group)
-dds <- DESeq(dds)
-res  <- results(dds, name = "group_Treat_vs_Ctrl")
-# 効果量縮約（推奨）
-res_shr <- lfcShrink(dds, coef = "group_Treat_vs_Ctrl", type = "apeglm")
-plotMA(res_shr, ylim=c(-4,4))
-```
-**重要関数と処理**：
-- `DESeqDataSet(se, design=~ group)`：設計式を与えてモデル枠を作成
-- `DESeq()`：サイズ因子→分散推定→NB GLM 当てはめ→検定
-- `results(name=…)`：係数（対比）を指定して結果抽出
-- `lfcShrink()`：LFC の不確実性を縮約（誤検出の視覚的誇張を抑制）
-
-**要点**：群因子の**基準レベル**（`relevel`）で符号が決まる／低発現フィルタを先に行う
-
----
-
-## ② 群 + バッチ：`~ batch + group`
-**目的**：群効果を推定しつつ、装置/日などの**既知バッチ**を調整
-
-```{r recipe2, eval=FALSE}
-se <- keep_min_counts(se0)
-colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
-colData(se)$batch <- factor(colData(se)$batch)
-dds <- DESeqDataSet(se, design = ~ batch + group)
-dds <- DESeq(dds)
-res <- results(dds, name = "group_Treat_vs_Ctrl")
-# 可視化（バッチ影響の確認）
-vsd <- vst(dds, blind=TRUE)
-plotPCA(vsd, intgroup = c("group","batch"))
-```
-**重要関数と処理**：`design = ~ batch + group` は**群差の主効果**を推定（加法的）
-
-**要点**：**完全交絡**（例：BatchA=Ctrlのみ）は**推定不能**。設計段階で回避
-
----
-
-## ③ 連続共変量あり：`~ RIN + group`
-**目的**：RNA品質（RIN）等の連続変数を**調整**して群効果を推定
-
-```{r recipe3, eval=FALSE}
-se <- keep_min_counts(se0)
-colData(se)$RIN   <- as.numeric(colData(se)$RIN)
-colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
-dds <- DESeqDataSet(se, design = ~ RIN + group)
-dds <- DESeq(dds)
-res <- results(dds, name = "group_Treat_vs_Ctrl")
-```
-**重要関数**：設計式の**左から順に調整**→最後の `group` が主目的
-
-**要点**：RIN と群の相関が強いと**準交絡**→RIN係数の符号/有意性も併せて確認
-
----
-
-## ④ 交互作用：`~ batch + group * time`
-**目的**：時間変化が群で**異なるか**（群×時間 交互作用）
-
-```{r recipe4, eval=FALSE}
-# 疑似的に time 因子を作る
-set.seed(1)
-se <- keep_min_counts(se0)
-colData(se)$time  <- factor(rep(c("0h","24h","48h"), length.out=ncol(se)))
-colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
-colData(se)$batch <- factor(colData(se)$batch)
-
-dds <- DESeqDataSet(se, design = ~ batch + group * time)
-# 交互作用の有無をLRTで一括検定
-dds <- DESeq(dds, test = "LRT", reduced = ~ batch + group + time)
-res_int <- results(dds)  # 交互作用を含む係数の同時検定（遺伝子ごと）
-# 特定の時間点での群差
-dds <- DESeq(dds)  # Waldに戻す場合は再度DESeq（通常は最初からWaldでOK）
-resultsNames(dds)
-res_24 <- results(dds, contrast = list(c("group_Treat_vs_Ctrl","groupTreat.time24h")))
-```
-**重要関数と処理**：
-- `group * time` は `group + time + group:time` と等価（主効果＋交互作用）
-- `test="LRT", reduced=…`：**交互作用項の寄与**をモデル比較で検定
-- `contrast=list(c("coef1","coef2"))`：複合対比の指定
-
-**要点**：係数名は `resultsNames(dds)` で確認。時間因子の**基準レベル**と順序に注意
-
----
-
-## ⑤ ペア設計（被験者内比較）：`~ subject + condition`
-**目的**：同一被験者の前後比較（被験者間のベースライン差は**ブロック効果**で除去）
-
-```{r recipe5, eval=FALSE}
-# 仮の subject / condition を作成
-se <- keep_min_counts(se0)
-colData(se)$subject   <- factor(rep(1:(ncol(se)/2), each=2))
-colData(se)$condition <- factor(rep(c("before","after"), times=ncol(se)/2))
-colData(se)$condition <- relevel(colData(se)$condition, ref = "before")
-
-dds <- DESeqDataSet(se, design = ~ subject + condition)
-dds <- DESeq(dds)
-res <- results(dds, name = "condition_after_vs_before")
-```
-**重要関数**：設計式の最初の `subject` が**ブロック**。主目的の `condition` は最後
-
-**要点**：**各被験者ごとに両条件が必要**。欠測が多い場合は線形混合モデルの検討も
-
----
-
-## ⑥ 多群：ANOVA型 → ペアコントラスト
-**目的**：A/B/C 3群で**全体差**を検定→必要に応じてペア比較
-
-```{r recipe6, eval=FALSE}
-# group3：A/B/C を作る
-tab <- data.frame(sample = colnames(se0), grp3 = rep(c("A","B","C"), length.out=ncol(se0)))
-se <- keep_min_counts(se0)
-colData(se)$grp3 <- factor(tab$grp3)
-# LRTで全体差
-dds <- DESeqDataSet(se, design = ~ grp3)
-dds <- DESeq(dds, test = "LRT", reduced = ~ 1)
-res_all <- results(dds)
-# ペアコントラスト
-dds <- DESeq(dds)  # Wald
-res_BA <- results(dds, contrast = c("grp3","B","A"))
-res_CA <- results(dds, contrast = c("grp3","C","A"))
-```
-**重要関数**：`test="LRT"` で**全体差**、`contrast=c("因子","水準2","水準1")` で**任意のペア**
-
-**要点**：多重検定の取り扱い（全体検定とペア検定は目的に応じて別管理）
-
----
-
-## ⑦ 複合コントラスト：差の差
-**目的**：`(Treat24 - Ctrl24) - (Treat0 - Ctrl0)` のような**差の差**を直接検定
-
-```{r recipe7, eval=FALSE}
-# 例： group * time の係数名を確認して複合contrastを作る
-resultsNames(dds)
-# 係数名の例："group_Treat_vs_Ctrl", "time_24h_vs_0h", "groupTreat.time24h" など
-# 差の差：（Treat- Ctrl） at 24h  − （Treat- Ctrl） at 0h
-res_Delta <- results(dds, contrast = list(
-  c("groupTreat.time24h"),           # 24hでの追加効果
-  c("groupTreat.time0h")             # 0hでの追加効果（係数名は設計に依存）
-))
-```
-**重要関数**：`resultsNames()` で**係数名を厳密確認**→ `contrast=list(c("+coef"), c("-coef"))`
-
-**要点**：**係数名はデータの因子水準に依存**。`droplevels()` や `relevel()` で統一
-
----
-
-## ⑧ 設計の妥当性チェック（交絡・コリニアリティ）
-**目的**：設計式が**推定可能**か事前に点検
-
-```{r recipe8}
-# 交絡の簡易可視化（群×バッチのクロス表）
-with(as.data.frame(colData(se0)), table(group, batch))
-# 連続共変量と群の相関
-with(as.data.frame(colData(se0)), tapply(RIN, group, mean))
-```
-**重要関数**：`table()`（クロス表）、`tapply()`（群別要約）
-
-**要点**：クロス表に**0セル**が多い、あるいは群とバッチが完全一致→**推定不能**
-
----
-
-## ⑨ 参考：サイズ因子や fitType の指定
-**目的**：特殊状況（スパース、スパイクイン等）での設定
-
-```{r recipe9, eval=FALSE}
-# 低カウントが多い場合のサイズ因子推定：
-dds <- DESeq(dds, sfType = "poscounts")
-# 分散関数の当てはめ方法：
-dds <- DESeq(dds, fitType = "parametric")  # 既定。場合により "local" や "mean"
-```
-**要点**：`sfType`/`fitType` は**状況に応じて**。変更時は解析ノートに必ず記録
-
----
-
-### 小結
-- 設計式は**目的効果を最後に**、調整因子は**先頭に**置くのが分かりやすい
-- 係数名は `resultsNames()` で**必ず確認**し、`contrast` を**明示**
-- **交絡**は設計段階で避ける。避けられない場合は限界を明記
-- 主要な決定（フィルタ/設計/対比/閾値）は `metadata(dds)` 等へ**痕跡化**
-
+> **まとめ**：**ひとつの最小ワークフロー**を起点に、「左に調整、右に目的効果」を足し引きするだけで、ほぼ全ての設計に拡張できます。検定は**設計式**で、解釈は**効果量＋FDR**で。必要なところにだけ分岐を差し込み、全体像を崩さず前へ進みましょう。
