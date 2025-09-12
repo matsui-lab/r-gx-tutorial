@@ -232,3 +232,229 @@ text(prcomp(t(logcpm))$x[,1:2], labels=colnames(se), pos=3, cex=.8)
 ```
 
 > **まとめ**：DGE解析は**設計式が命**。DESeq2の**NB GLM + 分散縮約 + LFC縮約**という枠組みを軸に、**バッチ/共変量/交互作用/ペア**など現実の設計へ拡張し、**QC→設計→検定→可視化→解釈**を一貫した痕跡で運用しましょう。
+
+# 付録：設計式レシピ **実践編（例題つき）**
+
+> ここでは、前節「よくある設計式レシピ集」を**そのまま動かせる最小例**としてまとめます。各小節は、
+> 1) **目的** 2) **前提/入力** 3) **コード** 4) **重要な関数と処理内容** 5) **使い方の要点** の順に記載。
+> 実行負荷の高い箇所は `eval=FALSE` とし、実データへ差し替える場合の注意を併記します。
+
+## 共通：デモ用 SE の用意とヘルパ
+```{r demo-common}
+set.seed(42)
+suppressPackageStartupMessages({library(SummarizedExperiment)})
+# 800 gene × 12 sample, Ctrl/Treat 各6。Batch A/B。RINを連続共変量。
+g <- 800; n <- 12
+cts <- matrix(rnbinom(g*n, mu = 50, size = 1), nrow = g,
+              dimnames = list(paste0("gene",1:g), paste0("S",1:n)))
+cd  <- S4Vectors::DataFrame(
+  sample    = colnames(cts),
+  group     = rep(c("Ctrl","Treat"), each = n/2),
+  batch     = rep(c("A","B"), times = n/2),
+  RIN       = round(rnorm(n, 8.5, 0.6), 1)
+)
+se0 <- SummarizedExperiment(assays = list(counts = cts), colData = cd)
+
+# 疑似DE（Treatで20遺伝子の発現を2倍に）
+idx <- sample(1:g, 20)
+assay(se0, "counts")[idx, cd$group=="Treat"] <- round(assay(se0, "counts")[idx, cd$group=="Treat"] * 2)
+
+# 低発現フィルタの共通関数（簡便版）
+keep_min_counts <- function(se, min_count=10, min_samples=NULL){
+  if (is.null(min_samples)) min_samples <- ceiling(ncol(se)/3)
+  se[rowSums(assay(se,"counts") >= min_count) >= min_samples, ]
+}
+```
+**重要関数**：`SummarizedExperiment()`（器）、`rowSums()`（フィルタ）、`assay()`/`colData()`（アクセサ）
+
+---
+
+## ① 二群比較：`~ group`
+**目的**：Ctrl vs Treat の差（主効果）
+
+**前提**：群以外の大きな系統差がない／あるいはサンプル数が十分で群が第一関心事
+
+```{r recipe1, eval=FALSE}
+suppressPackageStartupMessages({library(DESeq2)})
+se <- keep_min_counts(se0)
+colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
+# 構築 → 推定
+dds <- DESeqDataSet(se, design = ~ group)
+dds <- DESeq(dds)
+res  <- results(dds, name = "group_Treat_vs_Ctrl")
+# 効果量縮約（推奨）
+res_shr <- lfcShrink(dds, coef = "group_Treat_vs_Ctrl", type = "apeglm")
+plotMA(res_shr, ylim=c(-4,4))
+```
+**重要関数と処理**：
+- `DESeqDataSet(se, design=~ group)`：設計式を与えてモデル枠を作成
+- `DESeq()`：サイズ因子→分散推定→NB GLM 当てはめ→検定
+- `results(name=…)`：係数（対比）を指定して結果抽出
+- `lfcShrink()`：LFC の不確実性を縮約（誤検出の視覚的誇張を抑制）
+
+**要点**：群因子の**基準レベル**（`relevel`）で符号が決まる／低発現フィルタを先に行う
+
+---
+
+## ② 群 + バッチ：`~ batch + group`
+**目的**：群効果を推定しつつ、装置/日などの**既知バッチ**を調整
+
+```{r recipe2, eval=FALSE}
+se <- keep_min_counts(se0)
+colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
+colData(se)$batch <- factor(colData(se)$batch)
+dds <- DESeqDataSet(se, design = ~ batch + group)
+dds <- DESeq(dds)
+res <- results(dds, name = "group_Treat_vs_Ctrl")
+# 可視化（バッチ影響の確認）
+vsd <- vst(dds, blind=TRUE)
+plotPCA(vsd, intgroup = c("group","batch"))
+```
+**重要関数と処理**：`design = ~ batch + group` は**群差の主効果**を推定（加法的）
+
+**要点**：**完全交絡**（例：BatchA=Ctrlのみ）は**推定不能**。設計段階で回避
+
+---
+
+## ③ 連続共変量あり：`~ RIN + group`
+**目的**：RNA品質（RIN）等の連続変数を**調整**して群効果を推定
+
+```{r recipe3, eval=FALSE}
+se <- keep_min_counts(se0)
+colData(se)$RIN   <- as.numeric(colData(se)$RIN)
+colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
+dds <- DESeqDataSet(se, design = ~ RIN + group)
+dds <- DESeq(dds)
+res <- results(dds, name = "group_Treat_vs_Ctrl")
+```
+**重要関数**：設計式の**左から順に調整**→最後の `group` が主目的
+
+**要点**：RIN と群の相関が強いと**準交絡**→RIN係数の符号/有意性も併せて確認
+
+---
+
+## ④ 交互作用：`~ batch + group * time`
+**目的**：時間変化が群で**異なるか**（群×時間 交互作用）
+
+```{r recipe4, eval=FALSE}
+# 疑似的に time 因子を作る
+set.seed(1)
+se <- keep_min_counts(se0)
+colData(se)$time  <- factor(rep(c("0h","24h","48h"), length.out=ncol(se)))
+colData(se)$group <- relevel(factor(colData(se)$group), ref = "Ctrl")
+colData(se)$batch <- factor(colData(se)$batch)
+
+dds <- DESeqDataSet(se, design = ~ batch + group * time)
+# 交互作用の有無をLRTで一括検定
+dds <- DESeq(dds, test = "LRT", reduced = ~ batch + group + time)
+res_int <- results(dds)  # 交互作用を含む係数の同時検定（遺伝子ごと）
+# 特定の時間点での群差
+dds <- DESeq(dds)  # Waldに戻す場合は再度DESeq（通常は最初からWaldでOK）
+resultsNames(dds)
+res_24 <- results(dds, contrast = list(c("group_Treat_vs_Ctrl","groupTreat.time24h")))
+```
+**重要関数と処理**：
+- `group * time` は `group + time + group:time` と等価（主効果＋交互作用）
+- `test="LRT", reduced=…`：**交互作用項の寄与**をモデル比較で検定
+- `contrast=list(c("coef1","coef2"))`：複合対比の指定
+
+**要点**：係数名は `resultsNames(dds)` で確認。時間因子の**基準レベル**と順序に注意
+
+---
+
+## ⑤ ペア設計（被験者内比較）：`~ subject + condition`
+**目的**：同一被験者の前後比較（被験者間のベースライン差は**ブロック効果**で除去）
+
+```{r recipe5, eval=FALSE}
+# 仮の subject / condition を作成
+se <- keep_min_counts(se0)
+colData(se)$subject   <- factor(rep(1:(ncol(se)/2), each=2))
+colData(se)$condition <- factor(rep(c("before","after"), times=ncol(se)/2))
+colData(se)$condition <- relevel(colData(se)$condition, ref = "before")
+
+dds <- DESeqDataSet(se, design = ~ subject + condition)
+dds <- DESeq(dds)
+res <- results(dds, name = "condition_after_vs_before")
+```
+**重要関数**：設計式の最初の `subject` が**ブロック**。主目的の `condition` は最後
+
+**要点**：**各被験者ごとに両条件が必要**。欠測が多い場合は線形混合モデルの検討も
+
+---
+
+## ⑥ 多群：ANOVA型 → ペアコントラスト
+**目的**：A/B/C 3群で**全体差**を検定→必要に応じてペア比較
+
+```{r recipe6, eval=FALSE}
+# group3：A/B/C を作る
+tab <- data.frame(sample = colnames(se0), grp3 = rep(c("A","B","C"), length.out=ncol(se0)))
+se <- keep_min_counts(se0)
+colData(se)$grp3 <- factor(tab$grp3)
+# LRTで全体差
+dds <- DESeqDataSet(se, design = ~ grp3)
+dds <- DESeq(dds, test = "LRT", reduced = ~ 1)
+res_all <- results(dds)
+# ペアコントラスト
+dds <- DESeq(dds)  # Wald
+res_BA <- results(dds, contrast = c("grp3","B","A"))
+res_CA <- results(dds, contrast = c("grp3","C","A"))
+```
+**重要関数**：`test="LRT"` で**全体差**、`contrast=c("因子","水準2","水準1")` で**任意のペア**
+
+**要点**：多重検定の取り扱い（全体検定とペア検定は目的に応じて別管理）
+
+---
+
+## ⑦ 複合コントラスト：差の差
+**目的**：`(Treat24 - Ctrl24) - (Treat0 - Ctrl0)` のような**差の差**を直接検定
+
+```{r recipe7, eval=FALSE}
+# 例： group * time の係数名を確認して複合contrastを作る
+resultsNames(dds)
+# 係数名の例："group_Treat_vs_Ctrl", "time_24h_vs_0h", "groupTreat.time24h" など
+# 差の差：（Treat- Ctrl） at 24h  − （Treat- Ctrl） at 0h
+res_Delta <- results(dds, contrast = list(
+  c("groupTreat.time24h"),           # 24hでの追加効果
+  c("groupTreat.time0h")             # 0hでの追加効果（係数名は設計に依存）
+))
+```
+**重要関数**：`resultsNames()` で**係数名を厳密確認**→ `contrast=list(c("+coef"), c("-coef"))`
+
+**要点**：**係数名はデータの因子水準に依存**。`droplevels()` や `relevel()` で統一
+
+---
+
+## ⑧ 設計の妥当性チェック（交絡・コリニアリティ）
+**目的**：設計式が**推定可能**か事前に点検
+
+```{r recipe8}
+# 交絡の簡易可視化（群×バッチのクロス表）
+with(as.data.frame(colData(se0)), table(group, batch))
+# 連続共変量と群の相関
+with(as.data.frame(colData(se0)), tapply(RIN, group, mean))
+```
+**重要関数**：`table()`（クロス表）、`tapply()`（群別要約）
+
+**要点**：クロス表に**0セル**が多い、あるいは群とバッチが完全一致→**推定不能**
+
+---
+
+## ⑨ 参考：サイズ因子や fitType の指定
+**目的**：特殊状況（スパース、スパイクイン等）での設定
+
+```{r recipe9, eval=FALSE}
+# 低カウントが多い場合のサイズ因子推定：
+dds <- DESeq(dds, sfType = "poscounts")
+# 分散関数の当てはめ方法：
+dds <- DESeq(dds, fitType = "parametric")  # 既定。場合により "local" や "mean"
+```
+**要点**：`sfType`/`fitType` は**状況に応じて**。変更時は解析ノートに必ず記録
+
+---
+
+### 小結
+- 設計式は**目的効果を最後に**、調整因子は**先頭に**置くのが分かりやすい
+- 係数名は `resultsNames()` で**必ず確認**し、`contrast` を**明示**
+- **交絡**は設計段階で避ける。避けられない場合は限界を明記
+- 主要な決定（フィルタ/設計/対比/閾値）は `metadata(dds)` 等へ**痕跡化**
+
