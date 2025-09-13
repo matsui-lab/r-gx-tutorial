@@ -13,63 +13,143 @@ editor: source
 ---
 
 # 目的
-**遺伝子セット解析（GSEA/ORA）**の原理と実装を最小構成で学びます。回05で得た DGE 結果に対し、pre-ranked GSEA（`fgsea`）と ORA（`clusterProfiler`）を適用します。
+**遺伝子セット解析（GSEA/ORA）**の原理と実装を**最小構成**で学びます。回05で得た DGE 結果に対し、pre-ranked GSEA（`fgsea`）と ORA（`clusterProfiler`）を適用します。
 
-> 入力想定：`results/table/05_dge_all.csv`。
+> **入力想定**：`results/table/05_dge_all.csv`（列：`gene`/`symbol`、`log2FoldChange`、`pvalue`）。  
+> ファイルが無い/列が揃わない場合でも**授業が止まらないように**、自動でデモデータに切り替えて動作します。
 
-## 0. セットアップ
+---
+
+# 0. セットアップ
+
 ```r
-need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here")
+need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here","ggplot2")
 for (pkg in need) {
   if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
 }
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(fgsea); library(msigdbr); library(clusterProfiler); library(here)
+  library(readr); library(dplyr); library(fgsea); library(msigdbr)
+  library(clusterProfiler); library(here); library(ggplot2)
 })
+
 dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
 dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
+
+.msg <- function(...) message(sprintf("[%s] %s", format(Sys.time(), "%H:%M:%S"), paste0(...)))
 ```
 
-## 1. pre-ranked GSEA（fgsea）
-```r
-dge <- readr::read_csv(here("results","table","05_dge_all.csv"), show_col_types = FALSE)
+---
 
-# ランク統計量（例：符号付き -log10(p) × 効果量）
+# 1. pre-ranked GSEA（fgsea）
+
+```r
+# 1) DGE を読み込む（無ければデモに切替）
+use_demo <- FALSE
+in_csv <- here("results","table","05_dge_all.csv")
+if (file.exists(in_csv)) {
+  dge_raw <- readr::read_csv(in_csv, show_col_types = FALSE)
+  cn <- names(dge_raw)
+  pick <- function(cands){ i <- intersect(cands, cn); if (length(i)) i[1] else NA_character_ }
+  symcol <- pick(c("gene","symbol","SYMBOL","Gene","GENE"))
+  lfccol <- pick(c("log2FoldChange","logFC","log2FC","LFC"))
+  pcol   <- pick(c("pvalue","pval","P.Value","p_value","PValue"))
+  if (is.na(symcol) || is.na(lfccol) || is.na(pcol)) {
+    .msg("[WARN] 必要列が不足：デモに切替。列=", paste(cn, collapse=", "))
+    use_demo <- TRUE
+  } else {
+    dge <- dge_raw |>
+      transmute(gene = toupper(.data[[symcol]]),
+                log2FoldChange = as.numeric(.data[[lfccol]]),
+                pvalue = as.numeric(.data[[pcol]]))
+  }
+} else {
+  .msg("[WARN] 入力CSVが見つからないためデモに切替：", in_csv)
+  use_demo <- TRUE
+}
+
+# 2) デモデータ（MSigDB Hallmark の gene_symbol と整合するように生成）
+if (use_demo) {
+  msig_demo <- msigdbr(species = "Homo sapiens", category = "H") |>
+    select(gs_name, gene_symbol) |>
+    mutate(gene_symbol = toupper(gene_symbol))
+  genes_pool <- unique(msig_demo$gene_symbol)
+  set.seed(1)
+  N <- 12000
+  dge <- tibble(
+    gene = sample(genes_pool, size = N, replace = TRUE),
+    log2FoldChange = rnorm(N, sd = 1),
+    pvalue = runif(N)
+  )
+}
+
+# 3) ランク統計量（例：符号付き -log10(p) × 効果量）
 rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
 ranks <- rank_stat; names(ranks) <- dge$gene
 ranks <- sort(ranks, decreasing = TRUE)
 
-# 経路定義：MSigDB Hallmark（ヒト）
+# 4) 経路定義：MSigDB Hallmark（ヒト）
 h <- msigdbr(species = "Homo sapiens", category = "H") |>
   dplyr::mutate(gene_symbol = toupper(gene_symbol)) |>
   (\(df) split(df$gene_symbol, df$gs_name))()
 
+
+# 5) GSEA 実行
 set.seed(1)
-fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
-  arrange(padj)
+fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500) |>
+  tibble::as_tibble() |>
+  dplyr::arrange(padj)
 
 readr::write_csv(fg, here("results","table","06_fgsea_hallmark.csv"))
+
+# 簡易チェック
+print(head(select(fg, pathway, NES, size, padj), 10))
 ```
 
-### 1.1 可視化（代表経路）
+## 1.1 可視化（代表経路）
+
 ```r
-# 例：IFN-γ 応答
-plt <- fgsea::plotEnrichment(h[["HALLMARK_INTERFERON_GAMMA_RESPONSE"]], ranks)
+# 例：IFN-γ 応答（存在しない場合は先頭の経路）
+pw <- if ("HALLMARK_INTERFERON_GAMMA_RESPONSE" %in% names(h)) "HALLMARK_INTERFERON_GAMMA_RESPONSE" else names(h)[1]
+plt <- fgsea::plotEnrichment(h[[pw]], ranks) + ggplot2::labs(title = pw)
 ggplot2::ggsave(here("results","fig","06_fgsea_ifng.png"), plt, width=6, height=4)
+plt
 ```
 
-## 2. ORA（clusterProfiler）最小例
+---
+
+# 2. ORA（clusterProfiler）最小例
+
+**そのまま動く最小例（Hallmark を ORA する）**  
+GO/KEGGのインターネット依存やID変換を避け、まずは`clusterProfiler::enricher()`で**用語→遺伝子**の表（TERM2GENE）を渡す方法で確実に動かします。
+
 ```r
-# 上位/下位遺伝子のシグネチャを作り、富化（GO/KEGG 等）を実施する例（ダミー）
-# library(org.Hs.eg.db)
-# up  <- dge |>
-#   filter(padj < 0.05, log2FoldChange >  1) |>
-#   pull(gene)
-# ego_up <- enrichGO(up, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP", readable = TRUE)
-# dotplot(ego_up)
+# Hallmark の TERM2GENEを作成（SYMBOLベース）
+gs2gene <- stack(h) |>
+  transmute(gs = ind, gene = values)
+
+# 上位/下位のシグネチャ例：上位300を採用（教材として簡単）
+top_up <- names(ranks)[ranks > 0][1:300] |> na.omit()
+
+ora_h <- enricher(gene = top_up, TERM2GENE = gs2gene, pAdjustMethod = "BH")
+readr::write_csv(as_tibble(ora_h@result), here("results","table","06_ora_hallmark.csv"))
+enrichplot::dotplot(ora_h, showCategory = 15)
 ```
 
-## 3. まとめ（提出）
-- `06_fgsea_hallmark.csv` を提出。  
-- 図：`06_fgsea_ifng.png`。  
+> **参考（任意）**：GO を使うクラシックな例（`org.Hs.eg.db`が必要）  
+> ```r
+> # library(org.Hs.eg.db)
+> # up  <- dge |>
+> #   filter(padj < 0.05, log2FoldChange > 1) |>
+> #   pull(gene)
+> # ego_up <- enrichGO(up, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP", readable = TRUE)
+> # dotplot(ego_up)
+> ```
+
+---
+
+# 3. まとめ（提出）
+
+- `results/table/06_fgsea_hallmark.csv` を提出。  
+- 図：`results/fig/06_fgsea_ifng.png`。  
 - ノート：**ランク統計量の定義**・**母集団の取り方**・**多重検定**を明記。
+
