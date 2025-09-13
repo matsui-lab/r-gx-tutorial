@@ -41,7 +41,8 @@ ranks <- sort(ranks, decreasing = TRUE)
 
 # 経路定義：MSigDB Hallmark（ヒト）
 h <- msigdbr(species = "Homo sapiens", category = "H") |>
-  split(x = .$gene_symbol, f = .$gs_name)
+  dplyr::mutate(gene_symbol = toupper(gene_symbol)) |>
+  (\(df) split(df$gene_symbol, df$gs_name))()
 
 set.seed(1)
 fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
