@@ -225,10 +225,17 @@ head(design)
 ord <- order(colData(se)$group, colData(se)$sample_id)
 se_ord <- se[, ord]
 colData(se_ord)[, c("sample_id","group")]
-# 並べ替え後のライブラリサイズ棒グラフ
-df_lib2 <- data.frame(sample = colnames(se_ord), libsize = colSums(assay(se_ord, "counts")))
-ggplot(df_lib2, aes(x = sample, y = libsize, fill = group)) + 
-  geom_col() + coord_flip() + labs(title = "Library size (ordered)", y = "reads", x = NULL)
+
+# 並べ替え後のライブラリサイズ棒グラフ（group 列を明示して可視化）
+df_lib2 <- data.frame(
+  sample  = colnames(se_ord),
+  libsize = colSums(assay(se_ord, "counts")),
+  group   = as.factor(colData(se_ord)$group)
+)
+
+ggplot(df_lib2, aes(x = sample, y = libsize, fill = group)) +
+  geom_col() + coord_flip() +
+  labs(title = "Library size (ordered)", y = "reads", x = NULL)
 ```
 
 ## 事例 3: 正規化済みアッセイを追加して切替解析
