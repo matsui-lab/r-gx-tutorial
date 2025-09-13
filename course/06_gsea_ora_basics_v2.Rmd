@@ -1,0 +1,231 @@
+---
+title: "06: 遺伝子セット解析（GSEA/ORA） 基礎と実践"
+author: "集中講義"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: show
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+# ねらい / この章で学ぶこと
+
+- 遺伝子セット解析の必要性・目的を理解する。
+- **GSEA** と **ORA** の理論／実務上の違いを押さえる。
+- 準備 → 解析 → 可視化 → 出力まで再現可能に行う。
+- **ID 型の自動推定 & フォールバック** で、環境や入力差で止まらない Rmd にする。
+
+> 入力想定：`results/table/05_dge_all.csv`（列：`gene/symbol`, `log2FoldChange/logFC`, `pvalue/pval`）。
+
+---
+
+# 0. セットアップ
+
+```{r packages}
+install_if_missing <- function(cran_pkgs = character(), bioc_pkgs = character()) {
+  for (p in cran_pkgs) if (!requireNamespace(p, quietly = TRUE)) try(install.packages(p), silent = TRUE)
+  if (length(bioc_pkgs) > 0) {
+    if (!requireNamespace("BiocManager", quietly = TRUE)) try(install.packages("BiocManager"), silent = TRUE)
+    if (requireNamespace("BiocManager", quietly = TRUE)) {
+      for (p in bioc_pkgs) if (!requireNamespace(p, quietly = TRUE)) try(BiocManager::install(p, ask = FALSE, update = FALSE), silent = TRUE)
+    }
+  }
+}
+
+cran_pkgs <- c("tidyverse","here","msigdbr","readr","ggplot2")
+bioc_pkgs <- c("clusterProfiler","fgsea","enrichplot","AnnotationDbi","org.Hs.eg.db","ReactomePA")
+install_if_missing(cran_pkgs, bioc_pkgs)
+
+suppressPackageStartupMessages({
+  library(tidyverse); library(here); library(msigdbr)
+  library(clusterProfiler); library(fgsea); library(enrichplot)
+  library(AnnotationDbi); library(org.Hs.eg.db)
+})
+has_reactome <- requireNamespace("ReactomePA", quietly = TRUE)
+if (has_reactome) suppressPackageStartupMessages(library(ReactomePA))
+
+dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
+dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
+
+msg <- function(...) message(sprintf("[%s] %s", format(Sys.time(), "%H:%M:%S"), paste0(...)))
+```
+
+---
+
+# 1. DGE 入力の取得（無ければデモ）
+
+```{r prepare}
+get_dge_path <- function() getOption("dge_csv", Sys.getenv("DGE_CSV", here("results","table","05_dge_all.csv")))
+dge_path <- get_dge_path()
+use_demo <- !file.exists(dge_path)
+
+if (use_demo) {
+  msg("DGE CSV が見つからないためデモデータにフォールバック: ", dge_path)
+  set.seed(1)
+  dge <- tibble(
+    gene = paste0("GENE", sprintf("%05d", seq_len(12000))),
+    log2FoldChange = rnorm(12000, sd = 1),
+    pvalue = pmin(1, pmax(1e-16, runif(12000)))
+  )
+} else {
+  dge_raw <- readr::read_csv(dge_path, show_col_types = FALSE)
+  cn <- names(dge_raw); pick <- function(cands){ i <- intersect(cands, cn); if (length(i)) i[1] else NA }
+  symcol <- pick(c("gene","symbol","SYMBOL","Gene","GENE"))
+  lfccol <- pick(c("log2FoldChange","logFC","log2FC","LFC","logFC.."))
+  pcol   <- pick(c("pvalue","pval","P.Value","p_value","PValue"))
+  if (is.na(symcol) || is.na(lfccol) || is.na(pcol)) {
+    stop("DGE CSV に必要な列（gene/symbol, logFC, pvalue）が見つかりません。列名を確認してください。\n見つかった列: ", paste(cn, collapse = ", "))
+  }
+  dge <- dplyr::transmute(dge_raw,
+    gene = .data[[symcol]], log2FoldChange = as.numeric(.data[[lfccol]]), pvalue = as.numeric(.data[[pcol]]))
+}
+
+# ランキング（符号付き log2FC × -log10(p)）
+rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
+ranks_tbl <- tibble(symbol = dge$gene, score = rank_stat) |>
+  filter(!is.na(symbol), !is.na(score)) |>
+  arrange(desc(score)) |>
+  distinct(symbol, .keep_all = TRUE)
+```
+
+---
+
+# 2. **修正済み：ID 自動推定 → ENTREZID 変換 → 失敗時は SYMBOL 解析**
+
+```{r id-map-fixed}
+# ── 入力IDの型を自動推定して ENTREZID にマップ。だめなら SYMBOL 解析へ ──
+ids_raw <- unique(ranks_tbl$symbol)
+
+strip_ver <- function(x) sub("\\..*$", "", x)   # ENSG000001234.1 → ENSG000001234
+to_upper  <- function(x) toupper(x)
+
+# 種の推定（ENSMUSG が多ければマウス）
+likely_mouse <- mean(grepl("^ENSMUSG", ids_raw)) > 0.3
+if (likely_mouse && requireNamespace("org.Mm.eg.db", quietly = TRUE)) {
+  suppressPackageStartupMessages(library(org.Mm.eg.db))
+  OrgDb_used <- org.Mm.eg.db; species_label <- "Mus musculus"
+} else {
+  OrgDb_used <- org.Hs.eg.db; species_label <- "Homo sapiens"
+}
+
+keytypes_try <- c("SYMBOL","ALIAS","ENSEMBL","ENTREZID")
+keys_cov <- setNames(numeric(length(keytypes_try)), keytypes_try)
+for (kt in keytypes_try) {
+  if (!kt %in% AnnotationDbi::keytypes(OrgDb_used)) next
+  cand <- switch(kt,
+    "SYMBOL"   = to_upper(ids_raw),
+    "ALIAS"    = to_upper(ids_raw),
+    "ENSEMBL"  = strip_ver(ids_raw),
+    "ENTREZID" = ids_raw, ids_raw)
+  K <- tryCatch(AnnotationDbi::keys(OrgDb_used, keytype = kt), error = function(e) character())
+  if (length(K) > 0) keys_cov[kt] <- mean(cand %in% K)
+}
+best_kt <- names(which.max(keys_cov))
+msg("ID推定: species=", species_label, ", keytype=", best_kt, ", coverage=", sprintf("%.1f%%", 100*keys_cov[best_kt]))
+
+keys_input <- switch(best_kt,
+  "SYMBOL"=to_upper(ids_raw), "ALIAS"=to_upper(ids_raw), "ENSEMBL"=strip_ver(ids_raw),
+  "ENTREZID"=ids_raw, ids_raw)
+
+map_raw <- tryCatch(
+  AnnotationDbi::select(OrgDb_used, keys = keys_input, keytype = best_kt, columns = c("ENTREZID")),
+  error = function(e) NULL)
+
+use_symbol_mode <- FALSE
+if (!is.null(map_raw) && nrow(map_raw) > 0) {
+  col_from <- best_kt
+  map_tbl <- as_tibble(map_raw) |>
+    dplyr::rename(FROM = dplyr::all_of(col_from)) |>
+    tidyr::drop_na(ENTREZID) |>
+    dplyr::distinct(FROM, .keep_all = TRUE)
+
+  ranks_tbl <- ranks_tbl |>
+    dplyr::mutate(ID_NORM = switch(best_kt,
+      "SYMBOL"=to_upper(symbol), "ALIAS"=to_upper(symbol),
+      "ENSEMBL"=strip_ver(symbol), "ENTREZID"=symbol, symbol))
+
+  rank_entrez <- ranks_tbl |>
+    dplyr::inner_join(map_tbl, by = c("ID_NORM" = "FROM")) |>
+    dplyr::transmute(ENTREZID, score)
+
+  hit_rate <- nrow(rank_entrez) / nrow(ranks_tbl)
+  msg("ID変換: ENTREZIDヒット率＝", sprintf("%.1f%%", 100*hit_rate))
+
+  if (hit_rate >= 0.05) {
+    ranks <- rank_entrez$score
+    names(ranks) <- rank_entrez$ENTREZID
+    ranks <- sort(ranks, decreasing = TRUE)
+  } else {
+    msg("ID変換ヒットが少ないため SYMBOL ベース解析に切替。")
+    use_symbol_mode <- TRUE
+  }
+} else {
+  msg("ID変換に失敗したため SYMBOL ベース解析に切替。")
+  use_symbol_mode <- TRUE
+}
+
+# SYMBOL ランキング（常に保持）
+ranks_symbol <- ranks_tbl$score; names(ranks_symbol) <- toupper(ranks_tbl$symbol)
+ranks_symbol <- sort(ranks_symbol, decreasing = TRUE)
+```
+
+---
+
+# 3. 遺伝子セットの取得（MSigDB）
+
+```{r gene-sets}
+# Hallmark（ENTREZID と SYMBOL の両方を用意）
+msig_ent <- msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::select(gs_name, entrez_gene)
+pathways_entrez <- split(msig_ent$entrez_gene, msig_ent$gs_name)
+
+msig_sym <- msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::select(gs_name, gene_symbol) |>
+  dplyr::mutate(gene_symbol = toupper(gene_symbol))
+pathways_symbol <- split(msig_sym$gene_symbol, msig_sym$gs_name)
+```
+
+---
+
+# 4. GSEA（fgsea：ENTREZ があればENTREZ、なければSYMBOL）
+
+```{r gsea}
+set.seed(1)
+if (!use_symbol_mode) {
+  fg_res <- fgsea(pathways = pathways_entrez, stats = ranks,
+                  minSize = 15, maxSize = 500, nperm = 5000) |>
+    arrange(padj)
+} else {
+  fg_res <- fgsea(pathways = pathways_symbol, stats = ranks_symbol,
+                  minSize = 15, maxSize = 500, nperm = 5000) |>
+    arrange(padj)
+}
+readr::write_csv(fg_res, here("results","table","06_gsea_hallmark.csv"))
+fg_res |>
+  dplyr::select(pathway, NES, size, padj) |>
+  head(10)
+```
+
+---
+
+# 5. ORA（clusterProfiler / enricher）
+
+```{r ora}
+if (!use_symbol_mode) {
+  # ENTREZID で enrichGO / Reactome\n  top300 <- head(names(sort(ranks, decreasing = TRUE)), 300)\n  ora_go <- enrichGO(gene = top300, OrgDb = OrgDb_used, keyType = "ENTREZID", ont = "BP")\n  readr::write_csv(as_tibble(ora_go@result), here("results","table","06_ora_go.csv"))\n  enrichplot::dotplot(ora_go, showCategory = 15)\n  if (has_reactome) {\n    ora_re <- ReactomePA::enrichPathway(gene = top300, readable = TRUE)\n    readr::write_csv(as_tibble(ora_re@result), here("results","table","06_ora_reactome.csv"))\n  }\n} else {\n  # SYMBOL で Hallmark ORA（enricher）\n  gs2gene_sym <- stack(pathways_symbol) |>\n    dplyr::transmute(gs = ind, gene = values)\n  top300_sym <- head(names(ranks_symbol), 300)\n  ora_h <- enricher(gene = top300_sym, TERM2GENE = gs2gene_sym, pAdjustMethod = "BH")\n  readr::write_csv(as_tibble(ora_h@result), here("results","table","06_ora_hallmark_symbol.csv"))\n  enrichplot::dotplot(ora_h, showCategory = 15)\n}\n```
+
+---
+
+# 6. 付記（再現性）
+
+```{r session}
+readr::write_lines(capture.output(sessionInfo()), here("results","table","06_sessionInfo.txt"))
+sessionInfo()
+```
