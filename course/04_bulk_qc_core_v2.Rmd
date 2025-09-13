@@ -147,15 +147,36 @@ if (ok) {
 ```
 
 ```{r pca}
-pc <- prcomp(t(logcpm), scale. = TRUE)
-var_exp <- summary(pc)$importance[2, 1:2]
+# PCA with robust guard: drop zero-variance genes before scaling
+vars <- matrixStats::rowVars(logcpm)
+sel  <- which(vars > 0)
+
+if (length(sel) < 2) {
+  warning("Too few variable genes for scaled PCA; falling back to center-only PCA using all genes (no scaling).")
+  pc <- prcomp(t(logcpm), center = TRUE, scale. = FALSE)
+} else {
+  topn <- min(200, length(sel))  # use up to 200 most variable genes
+  ord  <- order(vars[sel], decreasing = TRUE)[1:topn]
+  X    <- t(logcpm[sel[ord], , drop = FALSE])
+  pc   <- prcomp(X, center = TRUE, scale. = TRUE)
+}
+
+# variance explained (guard for objects without 'importance' matrix size)
+imp <- tryCatch(summary(pc)$importance, error = function(e) NULL)
+if (!is.null(imp) && ncol(imp) >= 2) {
+  var_exp <- imp[2, 1:2]
+  xl <- sprintf("PC1 (%.1f%%)", 100*var_exp[1])
+  yl <- sprintf("PC2 (%.1f%%)", 100*var_exp[2])
+} else {
+  xl <- "PC1"; yl <- "PC2"
+}
+
 plot(pc$x[,1], pc$x[,2],
-     xlab = sprintf("PC1 (%.1f%%)", 100*var_exp[1]),
-     ylab = sprintf("PC2 (%.1f%%)", 100*var_exp[2]),
+     xlab = xl, ylab = yl,
      col  = as.integer(colData(se)$group)+1, pch = 16,
-     main = "PCA of log2-CPM")
+     main = "PCA of log2-CPM (variable genes)")
 legend("topright", legend = levels(colData(se)$group),
-       col = seq_along(levels(colData(se)$group))+1, pch = 16)
+       col = seq_along(levels(colData(se)$group))+1, pch = 16, bty = "n")
 ```
 
 ## RLE（Relative Log Expression）プロット
