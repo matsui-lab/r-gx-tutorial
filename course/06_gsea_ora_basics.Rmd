@@ -1,137 +1,470 @@
 ---
-title: "06_gsea_ora_basics"
-author: "集中講義"
-format:
-  html:
+title: "06: 遺伝子セット解析（GSEA/ORA） 基礎と実践"
+author: "matsui-lab r-gx-tutorial"
+date: "`r Sys.Date()`"
+output:
+  html_document:
     toc: true
-    toc-depth: 3
-execute:
-  echo: true
-  warning: false
-  message: false
-editor: source
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: paged
+  pdf_document: default
+bibliography: references.bib
+link-citations: true
+params:
+  org: "human"   # "mouse" などに切り替え可能
+  id_type: "SYMBOL" # 入力遺伝子IDタイプ
 ---
 
-# 目的
-**遺伝子セット解析（GSEA/ORA）**の原理と実装を**最小構成**で学びます。回05で得た DGE 結果に対し、pre-ranked GSEA（`fgsea`）と ORA（`clusterProfiler`）を適用します。
-
-> **入力想定**：`results/table/05_dge_all.csv`（列：`gene`/`symbol`、`log2FoldChange`、`pvalue`）。  
-> ファイルが無い/列が揃わない場合でも**授業が止まらないように**、自動でデモデータに切り替えて動作します。
-
----
-
-# 0. セットアップ
+## 0. セットアップ
 
 ```r
-need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here","ggplot2")
-for (pkg in need) if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here")
+for (pkg in need) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+}
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(fgsea); library(msigdbr)
-  library(clusterProfiler); library(here); library(ggplot2)
+  library(readr); library(dplyr); library(fgsea); library(msigdbr); library(clusterProfiler); library(here)
 })
 dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
 dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
-.msg <- function(...) message(sprintf("[%s] %s", format(Sys.time(), "%H:%M:%S"), paste0(...)))
 ```
+
+# ねらい / この章で学ぶこと
+
+- 遺伝子セット解析（Gene Set Enrichment Analysis; GSA）が**なぜ必要か**、**何を明らかにするか**を理解する。
+- 二大アプローチ **GSEA** と **ORA (Over-Representation Analysis)** の**理論的違い**と**実務上の使い分け**を把握する。
+- R での実装（`clusterProfiler` / `fgsea` / `msigdbr` / `ReactomePA` 等）を用いて、
+  1) データ準備 → 2) 解析 → 3) 可視化 → 4) レポート化 までの再現可能なワークフローを構築する。
+- 公的な遺伝子セット（MSigDB, GO, KEGG, Reactome など）の活用と、**独自遺伝子セットの作り方**（GMT/リスト）を学ぶ。
+
+> 実務では「差がついた原因」を**個々の遺伝子ではなく機能（経路・プロセス）**の単位で捉えることで、
+> 解釈・汎化・仮説形成が飛躍的に容易になります。
 
 ---
 
-# 1. pre-ranked GSEA（fgsea）
+# 1. なぜ遺伝子セット解析が必要か
 
-```r
-# 1) DGE を読み込む（無ければデモに切替）
-use_demo <- FALSE
-in_csv <- here("results","table","05_dge_all.csv")
-if (file.exists(in_csv)) {
-  dge_raw <- readr::read_csv(in_csv, show_col_types = FALSE)
-  cn <- names(dge_raw)
-  pick <- function(cands){ i <- intersect(cands, cn); if (length(i)) i[1] else NA_character_ }
-  symcol <- pick(c("gene","symbol","SYMBOL","Gene","GENE"))
-  lfccol <- pick(c("log2FoldChange","logFC","log2FC","LFC"))
-  pcol   <- pick(c("pvalue","pval","P.Value","p_value","PValue"))
-  if (is.na(symcol) || is.na(lfccol) || is.na(pcol)) {
-    .msg("[WARN] 必要列が不足：デモに切替。列=", paste(cn, collapse=", "))
-    use_demo <- TRUE
-  } else {
-    dge <- dge_raw |>
-      transmute(gene = toupper(.data[[symcol]]),
-                log2FoldChange = as.numeric(.data[[lfccol]]),
-                pvalue = as.numeric(.data[[pcol]]))
-  }
-} else {
-  .msg("[WARN] 入力CSVが見つからないためデモに切替：", in_csv)
-  use_demo <- TRUE
-}
+- 遺伝子発現の差は**小さく分散も大きい**ため、個々の遺伝子の p 値だけを見ると**解釈が不安定**になりがち。
+- 機能的に関連した遺伝子群（シグナル伝達経路、GO 生物学的過程など）は**協調的に**上昇/低下することが多い。
+- 遺伝子セット単位の統計量を用いると、**効果の集約**により**検出力**が向上し、バイオロジーへのマッピングが容易。
 
-# 2) デモデータ（MSigDB Hallmark の gene_symbol と整合するように生成）
-if (use_demo) {
-  msig_demo <- msigdbr(species = "Homo sapiens", category = "H") |>
-    dplyr::select(gs_name, gene_symbol) |>
-    dplyr::mutate(gene_symbol = toupper(gene_symbol))
-  genes_pool <- unique(msig_demo$gene_symbol)
-  set.seed(1)
-  N <- 12000
-  dge <- tibble(
-    gene = sample(genes_pool, size = N, replace = TRUE),
-    log2FoldChange = rnorm(N, sd = 1),
-    pvalue = runif(N)
-  )
-}
+# 2. アプローチ概観：GSEA と ORA
 
-# 3) ランク統計量（例：符号付き -log10(p) × 効果量）
-rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
-ranks <- rank_stat; names(ranks) <- dge$gene
-ranks <- sort(ranks, decreasing = TRUE)
+## 2.1 ORA (Over-Representation Analysis)
 
-# 4) 経路定義：MSigDB Hallmark（ヒト）  ※ base pipe でも安全な書き方
-h_tbl <- msigdbr(species = "Homo sapiens", category = "H") |>
-  dplyr::transmute(gs_name, gene_symbol = toupper(gene_symbol))
-h <- split(h_tbl$gene_symbol, h_tbl$gs_name)
+- 入力：**選別した遺伝子リスト**（例：DEG 上位 N 個、FDR<0.05 など）。
+- 問い：そのリスト内で、ある遺伝子セット（経路/GO など）が**期待より多く含まれているか**？
+- 代表手法：ハイパージオメトリック検定 / Fisher の正確確率検定。
+- 長所：実装容易、計算軽量、直感的。短所：**しきい値依存**、しきい値近辺の情報を捨てる。
 
-# 5) GSEA 実行
+## 2.2 GSEA (Gene Set Enrichment Analysis)
+
+- 入力：**全遺伝子の順位付け**（例：差の大きさの指標で降順）。
+- 問い：ある遺伝子セットの遺伝子は、**ランキングの上位/下位に偏って並ぶか**？
+- 代表手法：ランクリストに沿った**累積和統計量 (ES)**、
+  標本置換/遺伝子置換に基づく**帰無分布**、**FDR 補正**。
+- 長所：情報の**連続性を活用**、しきい値不要。短所：ランクリストの質依存、計算量。
+
+## 2.3 理論的違いと実務上の使い分け
+
+- **データの粒度**：
+  - ORA = 2 値化（選ぶ/選ばない）。
+  - GSEA = 連続スコア（効果量・統計量・符号付き値）。
+- **しきい値**：
+  - ORA は必要（→情報損失・バイアスの可能性）。
+  - GSEA は不要（全情報を利用）。
+- **推奨**：サンプル数が十分で**安定したランク**が得られるなら **GSEA を第一選択**。
+  DE 遺伝子が少ない・効果が大きい場合や計算簡便さを重視する場合は **ORA** も有効。
+- 実務では **両方を併用**し、結果の整合性や補完関係を確認するのが安全です。
+
+---
+
+# 3. 解析の前提と準備
+
+## 3.1 必要パッケージの読み込み
+
+```{r packages}
+# CRAN
+library(tidyverse)
+library(here)
+# Bioconductor
+suppressPackageStartupMessages({
+  library(clusterProfiler)
+  library(fgsea)
+  library(msigdbr)
+  library(org.Hs.eg.db)   # ヒト
+  library(AnnotationDbi)
+  library(ReactomePA)
+})
+```
+
+> マウス等に切り替える場合は `org.Mm.eg.db` を読み込み、ID も対応させます。
+
+## 3.2 入力データの想定
+
+- 差次的発現解析（DESeq2/limma 等）で得た **統計結果表**：
+  - `gene`（遺伝子 ID）、`logFC` または `stat`、`pvalue`/`padj` など。
+- ここではダミー例を合成してデモします（実運用では各章の DE 解析結果を読み込む）。
+
+```{r demo-data}
+# ダミーのランキング用データ
 set.seed(1)
-fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
-  arrange(padj)
-readr::write_csv(fg, here("results","table","06_fgsea_hallmark.csv"))
-print(head(dplyr::select(fg, pathway, NES, size, padj), 10))
+res_tbl <- tibble(
+  gene = paste0("GENE", sprintf("%04d", 1:12000)),
+  logFC = rnorm(12000, sd = 1),
+  stat  = rnorm(12000) + 0.6*scale(rnorm(12000)),
+  pval  = runif(12000)
+) |>
+  mutate(symbol = gene) # 実データでは SYMBOL 等を入れる
+
+# ランキング指標：例として t 統計量相当を使う
+rank_metric <- res_tbl |>
+  arrange(desc(stat)) |>
+  transmute(symbol, score = stat) |>
+  distinct(symbol, .keep_all = TRUE)
+
+head(rank_metric)
 ```
 
-## 1.1 可視化（代表経路）
+## 3.3 遺伝子 ID の整備・変換
 
-```r
-pw <- if ("HALLMARK_INTERFERON_GAMMA_RESPONSE" %in% names(h)) "HALLMARK_INTERFERON_GAMMA_RESPONSE" else names(h)[1]
-plt <- fgsea::plotEnrichment(h[[pw]], ranks) + ggplot2::labs(title = pw)
-ggplot2::ggsave(here("results","fig","06_fgsea_ifng.png"), plt, width=6, height=4)
-plt
+- 解析/データベース間で **ID タイプの不一致**が最頻のトラブル源。
+- 代表：Ensembl, ENTREZID, SYMBOL。`AnnotationDbi::select()` で変換。
+
+```{r id-mapping}
+# 例: SYMBOL → ENTREZID（ヒト）
+map <- AnnotationDbi::select(org.Hs.eg.db,
+                             keys = rank_metric$symbol,
+                             keytype = "SYMBOL",
+                             columns = c("ENTREZID")) |>
+  as_tibble() |>
+  drop_na(ENTREZID) |>
+  distinct(SYMBOL, .keep_all = TRUE)
+
+rank_entrez <- rank_metric |>
+  inner_join(map, by = c("symbol" = "SYMBOL")) |>
+  transmute(ENTREZID, score)
+
+# fgsea の named numeric ベクトル形式
+ranks <- rank_entrez$score
+names(ranks) <- rank_entrez$ENTREZID
+```
+
+> **実務 Tips**：重複 ID は `dplyr::slice_max(abs(score), n=1, by=ID)` 等で代表を 1 つに。
+
+---
+
+# 4. 公的遺伝子セットの取得
+
+## 4.1 MSigDB（msigdbr）
+
+```{r msigdbr}
+# 例: ヒト, C2 (curated), KEGG/REACTOME/BIOCARTA 等を含む
+msig_c2 <- msigdbr(species = "Homo sapiens", category = "C2") |>
+  select(gs_name, entrez_gene) |>
+  group_by(gs_name) |>
+  summarise(genes = list(unique(entrez_gene)), .groups = "drop")
+
+# fgsea 用リスト
+pathways_c2 <- setNames(msig_c2$genes, msig_c2$gs_name)
+length(pathways_c2)
+```
+
+## 4.2 GO / KEGG / Reactome（clusterProfiler / ReactomePA）
+
+- `clusterProfiler::enrichGO`, `enrichKEGG`, `gseGO`, `gseKEGG`
+- `ReactomePA::enrichPathway`, `gsePathway`
+
+> KEGG は ID/アクセス制限の仕様が変わることがあるため、実運用では MSigDB 経由の KEGG セットや Reactome を併用推奨。
+
+---
+
+# 5. GSEA の実行（fgsea / clusterProfiler）
+
+## 5.1 fgsea による GSEA（高速実装）
+
+```{r fgsea}
+fg_out <- fgsea::fgsea(pathways = pathways_c2,
+                       stats    = ranks,
+                       minSize  = 10,
+                       maxSize  = 500,
+                       nperm    = 10000)
+
+fg_tbl <- fg_out |>
+  arrange(padj) |>
+  as_tibble()
+
+head(select(fg_tbl, pathway, NES, size, padj))
+```
+
+### 可視化
+
+```{r fgsea-plots}
+# 上位 3 セットのランニングスコア
+fgsea::plotEnrichment(pathways_c2[[ fg_tbl$pathway[1] ]], ranks)
+fgsea::plotEnrichment(pathways_c2[[ fg_tbl$pathway[2] ]], ranks)
+fgsea::plotEnrichment(pathways_c2[[ fg_tbl$pathway[3] ]], ranks)
+```
+
+## 5.2 clusterProfiler の GSEA 系
+
+```{r cp-gsea}
+# 例: gseGO（BP 用）。ENTREZID 前提
+cp_go <- gseGO(geneList     = sort(ranks, decreasing = TRUE),
+               OrgDb        = org.Hs.eg.db,
+               ont          = "BP",
+               minGSSize    = 10,
+               maxGSSize    = 500,
+               pvalueCutoff = 0.05,
+               verbose      = FALSE)
+
+# プロット
+dotplot(cp_go, showCategory = 15)
+ridgeplot(cp_go)
 ```
 
 ---
 
-# 2. ORA（clusterProfiler）最小例
+# 6. ORA の実行（clusterProfiler）
 
-```r
-# Hallmark の TERM2GENEを作成（SYMBOLベース）
-gs2gene <- stack(h) |>
-  dplyr::transmute(gs = ind, gene = values)
+## 6.1 入力リストの作成（DEG 選別）
 
-# 上位シグネチャ：上位300を採用（教材として簡単）
-top_up <- names(ranks)[ranks > 0][1:min(300, sum(ranks > 0))] |> na.omit()
+```{r deg-list}
+# 例：符号付き効果の大きい上位を選ぶ（実務では FDR しきい値など）
+up_genes <- res_tbl |>
+  arrange(desc(stat)) |>
+  slice_head(n = 300) |>
+  pull(symbol)
 
-ora_h <- enricher(gene = top_up, TERM2GENE = gs2gene, pAdjustMethod = "BH")
-readr::write_csv(as_tibble(ora_h@result), here("results","table","06_ora_hallmark.csv"))
+# SYMBOL → ENTREZID
+up_entrez <- AnnotationDbi::select(org.Hs.eg.db, keys = up_genes,
+                                   keytype = "SYMBOL", columns = "ENTREZID") |>
+  as_tibble() |>
+  pull(ENTREZID) |>
+  unique() |>
+  na.omit()
+```
 
-if (requireNamespace("enrichplot", quietly = TRUE)) {
-  enrichplot::dotplot(ora_h, showCategory = 15)
-} else {
-  .msg("[NOTE] enrichplot が無いので、表を表示します。")
-  print(head(as_tibble(ora_h@result), 15))
+## 6.2 enrichGO / enrichKEGG / enrichPathway
+
+```{r ora}
+ora_go <- enrichGO(gene          = up_entrez,
+                   OrgDb         = org.Hs.eg.db,
+                   keyType       = "ENTREZID",
+                   ont           = "BP",
+                   pAdjustMethod = "BH",
+                   qvalueCutoff  = 0.1,
+                   minGSSize     = 10,
+                   maxGSSize     = 500)
+
+ora_reactome <- ReactomePA::enrichPathway(gene = up_entrez, readable = TRUE)
+
+# プロット
+barplot(ora_go, showCategory = 15)
+dotplot(ora_reactome, showCategory = 15)
+```
+
+## 6.3 背景集合（universe）の設定
+
+- ORA は**背景（母集団）**が重要。通常は「測定可能だった全遺伝子」や「フィルタ後に DE 解析に使った全遺伝子」。
+
+```{r universe}
+all_symbols <- res_tbl$symbol
+all_entrez <- AnnotationDbi::select(org.Hs.eg.db, keys = all_symbols,
+                                    keytype = "SYMBOL", columns = "ENTREZID") |>
+  as_tibble() |>
+  pull(ENTREZID) |>
+  unique() |>
+  na.omit()
+
+ora_go_u <- enrichGO(gene = up_entrez, OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                     universe = all_entrez, ont = "BP")
+```
+
+> **注意**：背景を誤ると p 値は大きく歪みます。実験設計・フィルタ条件に合わせて設定しましょう。
+
+---
+
+# 7. 可視化と要約
+
+```{r viz}
+# clusterProfiler 汎用プロット
+emapplot(pairwise_termsim(ora_go_u))
+cnetplot(ora_go_u, showCategory = 8)
+enrichplot::gseaplot2(cp_go, geneSetID = cp_go@result$ID[1])
+
+# 冗長 GO 用語の縮約
+ora_go_simpl <- simplify(ora_go_u, cutoff = 0.7, by = "p.adjust", select_fun = min)
+dotplot(ora_go_simpl, showCategory = 20)
+```
+
+---
+
+# 8. 遺伝子セットの拡張・独自作成
+
+## 8.1 既存セットのバリエーション
+
+- **MSigDB コレクション**：H (Hallmark), C2（curated）, C5（GO）, C6（Oncogenic signatures）, C7（免疫系）など。
+- **Reactome**：反応・経路に強い階層構造。
+- **Disease / Drug** 系：CTD, LINCS 等（msigdbr 経由で取得可能な場合あり）。
+
+## 8.2 独自遺伝子セット（GMT/リスト）
+
+```{r custom-sets}
+# リスト形式（fgsea/clusterProfiler 共通で扱いやすい）
+my_sets <- list(
+  MY_SIGNATURE_A = c("7157", "1956", "5290"),  # ENTREZID の例（TP53, EGFR, PIK3CA 等）
+  MY_SIGNATURE_B = c("1956", "7422")
+)
+
+# GMT へ書き出し（1 行 = set \t desc \t gene1 gene2 ...）
+write_gmt <- function(path, sets){
+  con <- file(path, open = "w"); on.exit(close(con))
+  for(nm in names(sets)){
+    line <- paste(c(nm, "NA", sets[[nm]]), collapse = "\t")
+    writeLines(line, con)
+  }
 }
+
+# 例: write_gmt(here("data","my_sets.gmt"), my_sets)
+```
+
+> **ポイント**：
+> - ID タイプは解析系と一致させる（ENTREZID/SYMBOL 等）。
+> - セットサイズが極端に小/大（<10, >500 など）は多重検定や解釈に不利。
+
+---
+
+# 9. 実務設計の意思決定ガイド
+
+- **GSEA を優先**：サンプル数が十分、連続的な効果が分布全体に広がる想定。
+- **ORA を優先**：大きい効果で明確な DE リストが得られる、計算簡便さ重視、（例）小型プロジェクトの素早いサマリー。
+- **背景集合**：ORA で必須。**測定可能な全集合**に合わせる。
+- **重複/ID ずれ**：変換時の重複は代表 1 つに集約。種・バージョンの不一致に注意。
+- **用語冗長性**：`simplify()` / `emapplot()` でクラスタ化・縮約。
+- **方向性**：GSEA は NES（正=上位, 負=下位）で方向解釈。ORA は上げ下げ別々のリストで実行するのが安全。
+- **バイアス**：遺伝子長・ GC 含量バイアスには `goseq` が有用（RNA-seq で特に注意）。
+
+---
+
+# 10. 典型ワークフロー（最小例）
+
+```{r workflow}
+# 1) ランキング作成
+ranks <- rank_entrez$score; names(ranks) <- rank_entrez$ENTREZID
+
+# 2) 公的セット取得
+msig_h <- msigdbr("Homo sapiens", category = "H") |>
+  select(gs_name, entrez_gene) |>
+  group_by(gs_name) |>
+  summarise(genes = list(unique(entrez_gene)), .groups = "drop")
+
+pathways_h <- setNames(msig_h$genes, msig_h$gs_name)
+
+# 3) GSEA（Hallmark）
+fg_h <- fgsea(pathways_h, ranks, minSize=10, maxSize=500, nperm=10000) |>
+  arrange(padj)
+
+# 4) ORA（上位 300）
+up300 <- rank_entrez |>
+  arrange(desc(score)) |>
+  slice_head(n=300) |>
+  pull(ENTREZID)
+
+ora_go <- enrichGO(up300, OrgDb = org.Hs.eg.db, keyType="ENTREZID", ont="BP")
+
+# 5) 可視化
+print(dotplot(ora_go, showCategory=12))
+print(fg_h |> slice_head(n=10) |> select(pathway, NES, padj))
 ```
 
 ---
 
-# 3. まとめ（提出）
+# 11. 出力の整形・レポート化
 
-- `results/table/06_fgsea_hallmark.csv` を提出。  
-- 図：`results/fig/06_fgsea_ifng.png`。  
-- ノート：**ランク統計量の定義**・**母集団の取り方**・**多重検定**を明記。
+```{r export}
+# 表として書き出し（実運用では here("results", ...) 等に）
+readr::write_tsv(fg_tbl,   file = "gsea_fgsea_c2.tsv")
+readr::write_tsv(as_tibble(ora_go@result), file = "ora_go.tsv")
+
+# 重要メタ情報
+sessionInfo()
+```
+
+---
+
+# 12. よくある落とし穴と対策（チェックリスト）
+
+- [ ] ID タイプが一致しているか（SYMBOL と ENTREZID の取り違え）。
+- [ ] 背景集合（universe）を適切に設定したか（ORA）。
+- [ ] セットサイズの極端値を除外したか（min/max）。
+- [ ] 多重検定補正（padj/FDR）で判断しているか。
+- [ ] 上げ下げを分けて解釈したか（ORA）。
+- [ ] 冗長な GO 用語の縮約を行ったか。
+- [ ] 可視化で**方向性と効果量（NES/オッズ比）**を確認したか。
+
+---
+
+# 13. 参考（パッケージと関数まとめ）
+
+- **GSEA**：`fgsea::fgsea`, `clusterProfiler::gseGO/gseKEGG`, `ReactomePA::gsePathway`
+- **ORA**：`clusterProfiler::enrichGO/enrichKEGG/enricher`, `ReactomePA::enrichPathway`
+- **可視化**：`enrichplot::dotplot`, `emapplot`, `cnetplot`, `gseaplot2`
+- **遺伝子セット**：`msigdbr`, `msigdbr_show_species()`, `msigdbr_collections()`
+- **ID 変換**：`AnnotationDbi::select`, `bitr`
+- **バイアス補正**：`goseq`
+
+> 各関数は `?関数名` でヘルプ参照。大規模データでは `BiocParallel` による並列化も検討してください。
+
+---
+
+# 付録 A：`clusterProfiler` で独自遺伝子セットを ORA/GSEA
+
+```{r enricher-custom}
+# ORA: enricher（独自リスト）
+gs2gene <- stack(my_sets) |>
+  transmute(gs = ind, gene = values)
+
+ora_custom <- enricher(gene = up300,
+                       TERM2GENE = gs2gene,
+                       pAdjustMethod = "BH")
+
+dotplot(ora_custom)
+
+# GSEA: GSEA（独自リスト）
+cp_custom <- GSEA(geneList = sort(ranks, decreasing = TRUE),
+                  TERM2GENE = gs2gene,
+                  pvalueCutoff = 0.25)
+
+gseaplot2(cp_custom, geneSetID = cp_custom@result$ID[1])
+```
+
+---
+
+# 付録 B：マウスへ切り替える場合の最小変更
+
+```{r mouse-hint}
+# library(org.Mm.eg.db)
+# species <- "Mus musculus"
+# msig_m <- msigdbr(species = species, category = "H")
+# ID 変換を org.Mm.eg.db に合わせて再実行
+```
+
+---
+
+# 付録 C：再現性のための環境固定
+
+```{r renv}
+# renv::init()
+# renv::snapshot()
+# renv::status()
+```
+
+---
+
+# 付記
+
+- 本 Rmd はテンプレートです。実データでは前章（DE 解析）から結果を読み込み、ID・種・セットを合わせてください。
+- 可視化図は適宜 `ggplot2` のテーマやラベルを整えてレポートに貼付できる品質に整形してください。
