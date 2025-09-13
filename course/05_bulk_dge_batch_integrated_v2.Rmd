@@ -123,6 +123,22 @@ design <- if (has_batch) {
 colnames(design); design
 ```
 
+## このデータで利用可能な列と、例示のみの列
+
+> **今回の `airway_small` には `sample_id` と `group` のみが含まれます。**
+> 以降に出てくる `batch` / `RIN` / `time` は **参考例（このデータには含まれない）** としてコードを示します。
+
+```{r columns-check, results='asis'}
+cd_names <- names(cd)
+cands <- c("sample_id","group","batch","RIN","time")
+tbl <- data.frame(column = cands, present = cands %in% cd_names)
+print(knitr::kable(tbl, caption = "このデータに含まれる列と有無"))
+if (!("batch" %in% cd_names)) cat("\n> **Note:** このデータには `batch` 列はありません。5.1 のバッチ調整は**例示のみ**で実行されません。\n")
+if (!("RIN" %in% cd_names))   cat("\n> **Note:** このデータには `RIN` 列はありません。5.2 は**例示のみ**です。\n")
+if (!("time" %in% cd_names))  cat("\n> **Note:** このデータには `time` 列はありません。5.3 は**例示のみ**です。\n")
+```
+
+
 # 4. 最小ワークフローを一度だけ通す（2群・バッチ有無自動）
 
 ## 低発現フィルタ → 正規化 → voom → 線形モデル
