@@ -252,3 +252,105 @@ keep_min_counts <- function(se, min_count=10, min_samples=NULL){
 ```
 
 > **まとめ**：**ひとつの最小ワークフロー**を起点に、「左に調整、右に目的効果」を足し引きするだけで、ほぼ全ての設計に拡張できます。検定は**設計式**で、解釈は**効果量＋FDR**で。必要なところにだけ分岐を差し込み、全体像を崩さず前へ進みましょう。
+
+
+
+## 付録：Chapter 06 用のDGEエクスポート（自動・堅牢）
+
+```{r export_for_ch06, echo=TRUE}
+# 目的：06_gsea_ora_basics.Rmd が読む CSV をここで確実に出力する
+# 出力先（指定）：
+out_dir_abs <- "/nfshome/matsui/r-gx-tutorial/results/table"
+out_csv_abs <- file.path(out_dir_abs, "05_dge_all.csv")
+
+# 可能ならプロジェクト相対にも出力（任意、授業用）
+out_dir_rel <- "results/table"
+out_csv_rel <- file.path(out_dir_rel, "05_dge_all.csv")
+
+dir.create(out_dir_abs, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_dir_rel, recursive = TRUE, showWarnings = FALSE)
+
+# 候補オブジェクトから DGE テーブルを拾う（DESeq2 / edgeR / limma など想定）
+pick_first_df <- function(cands) {
+  for (nm in cands) {
+    if (exists(nm, inherits = TRUE)) {
+      obj <- get(nm, inherits = TRUE)
+      if (is.data.frame(obj)) return(obj)
+    }
+  }
+  # rownames ベースのDESeq2::resultsの可能性：'res' などが data.frame でない場合あり
+  if (exists("res", inherits = TRUE)) {
+    obj <- get("res", inherits = TRUE)
+    if (!is.data.frame(obj) && !is.null(tryCatch(as.data.frame(obj), error=function(e) NULL))) {
+      return(as.data.frame(obj))
+    }
+  }
+  NULL
+}
+
+# よくある変数名の候補
+candidates <- c("dge_res","deg_res","de_table","deg_table","results_tbl","results_df",
+                "res","tt","deg","dge","fit2","topTable_res","dgeAll","tbl_dge")
+
+df <- pick_first_df(candidates)
+
+# 見つからない場合は停止せず、可能なヒントを出す
+if (is.null(df)) {
+  message("[WARN] DGEテーブルの候補オブジェクトが見つかりませんでした。",
+          " 'res' や 'dge_res' 等のオブジェクト名を確認してください。",
+          " ここではデモ用に仮データを書き出します（06での動作確認用）。")
+  set.seed(1)
+  df <- data.frame(
+    gene = paste0("GENE", sprintf("%05d", 1:1000)),
+    log2FoldChange = rnorm(1000),
+    pvalue = runif(1000)
+  )
+}
+
+# 列名を正規化：gene / log2FoldChange / pvalue
+cn <- names(df)
+pick <- function(cands) { i <- intersect(cands, cn); if (length(i)) i[1] else NA_character_ }
+
+gene_col <- pick(c("gene","Gene","GENE","symbol","SYMBOL","genes","gene_id","ENSEMBL","ENSEMBLID","Row.names","rownames"))
+lfc_col  <- pick(c("log2FoldChange","logFC","log2FC","LFC"))
+p_col    <- pick(c("pvalue","pval","P.Value","PValue","p_value","Pr..F."))
+
+# rownames が遺伝子のときに対応
+if (is.na(gene_col) && !is.null(rownames(df)) && any(nchar(rownames(df)) > 0)) {
+  df$gene <- rownames(df)
+  gene_col <- "gene"
+}
+
+# logFC → log2FoldChange 名に寄せる（edgeR/limma は log2なのでOK）
+if (is.na(lfc_col) && "logFC" %in% cn) lfc_col <- "logFC"
+
+# p値が FDR系しかない場合は代用（最悪のフォールバック）
+if (is.na(p_col)) {
+  if ("p_adj" %in% cn) p_col <- "p_adj"
+  if ("padj" %in% cn) p_col <- "padj"
+}
+
+# 最終テーブル（最低限の3列）
+export_tbl <- df |>
+  dplyr::transmute(
+    gene = .data[[gene_col]],
+    log2FoldChange = as.numeric(.data[[lfc_col]]),
+    pvalue = as.numeric(.data[[p_col]])
+  )
+
+# 欠損や無限大を安全側に
+export_tbl <- export_tbl |>
+  dplyr::filter(!is.na(gene)) |>
+  dplyr::mutate(
+    log2FoldChange = ifelse(is.finite(log2FoldChange), log2FoldChange, NA_real_),
+    pvalue = ifelse(is.finite(pvalue), pvalue, NA_real_)
+  ) |>
+  dplyr::filter(!is.na(log2FoldChange), !is.na(pvalue))
+
+# 書き出し（絶対パス & 相対パス）
+readr::write_csv(export_tbl, out_csv_abs)
+readr::write_csv(export_tbl, out_csv_rel)
+
+message(sprintf("[OK] Chapter 06 用 DGE を書き出しました：\n  - %s\n  - %s", out_csv_abs, out_csv_rel))
+```
+
