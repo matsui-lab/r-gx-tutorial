@@ -11,7 +11,7 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7, fig.height = 4.5)
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(tidyr); library(tibble)
+  library(readr); library(dplyr); library(tidyr)
   library(SummarizedExperiment); library(S4Vectors)
 })
 counts_path <- "~/r-gx-tutorial/data/processed/airway_counts_small.csv"
@@ -22,34 +22,34 @@ meta_path   <- "~/r-gx-tutorial/data/processed/airway_meta_small.csv"
 ## Load counts and sample metadata
 
 ```{r load-data}
-cts_tbl <- readr::read_csv(counts_path, show_col_types = FALSE)
-meta_tbl <- readr::read_csv(meta_path, show_col_types = FALSE)
+# Read
+cts_tbl  <- readr::read_csv(counts_path, show_col_types = FALSE)
+meta_tbl <- readr::read_csv(meta_path,   show_col_types = FALSE)
 
-# Detect feature (row) column: prefer 'gene' if present, otherwise last column
+# Detect feature (row) column: prefer 'gene' if present, else last column
 feature_col <- if ("gene" %in% names(cts_tbl)) "gene" else tail(names(cts_tbl), 1)
 sample_cols <- setdiff(names(cts_tbl), feature_col)
 
-# Peek
+# Peek (in console)
 dplyr::glimpse(cts_tbl)
 dplyr::glimpse(meta_tbl)
 
-# Ensure sample_id column in meta and reorder to match counts
+# Ensure meta has sample_id and reorder to match counts' columns using BASE subsetting
 stopifnot("sample_id" %in% names(meta_tbl))
-meta_tbl <- meta_tbl |>
-  mutate(sample_id = as.character(sample_id)) |>
-  slice(match(sample_cols, sample_id))
+meta_tbl$sample_id <- as.character(meta_tbl$sample_id)
+meta_tbl <- meta_tbl[match(sample_cols, meta_tbl$sample_id), , drop = FALSE]
 
-# Build counts matrix with gene as rownames and samples as columns
-cts_mat <- cts_tbl |>
-  relocate(all_of(feature_col), .before = 1) |>
-  column_to_rownames(var = feature_col) |>
-  as.matrix()
-
-# Coerce to integer storage
+# Build counts matrix using BASE operations (avoid column_to_rownames & dplyr::slice conflicts)
+cts_df <- as.data.frame(cts_tbl, stringsAsFactors = FALSE)
+# Reorder columns to feature + sample_cols
+cts_df <- cts_df[, c(feature_col, sample_cols), drop = FALSE]
+rownames(cts_df) <- cts_df[[feature_col]]
+cts_df[[feature_col]] <- NULL
+cts_mat <- as.matrix(cts_df)
 storage.mode(cts_mat) <- "integer"
 
 # Sanity checks
-stopifnot(all(colnames(cts_mat) == meta_tbl$sample_id))
+stopifnot(identical(colnames(cts_mat), meta_tbl$sample_id))
 dim(cts_mat)
 head(cts_mat[, 1:min(4, ncol(cts_mat))])
 ```
@@ -58,7 +58,7 @@ head(cts_mat[, 1:min(4, ncol(cts_mat))])
 ## Construct a SummarizedExperiment
 
 ```{r make-se}
-col_data <- S4Vectors::DataFrame(meta_tbl)
+col_data <- S4Vectors::DataFrame(as.data.frame(meta_tbl))
 se <- SummarizedExperiment::SummarizedExperiment(
   assays = list(counts = cts_mat),
   colData = col_data
