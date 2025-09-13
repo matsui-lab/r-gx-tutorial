@@ -1,0 +1,258 @@
+
+---
+title: "Bulk RNA-seq DGE：全体像→設計→実行→解釈（airway_small 実データ版）"
+author: "matsui-lab"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+editor_options:
+  chunk_output_type: inline
+---
+
+# 0. まず全体像（このRmdの読み方）
+
+- 擬似データではなく **airway_small（500 genes × 6 samples）** を使って、**DGEのコア一連**（QCの確認→設計→実行→解釈→エクスポート）を最短経路で通す。  
+- **バッチ項**は**存在すれば加える**（`~ batch + group`）、**無ければ2群**（`~ group`）で実行。  
+- 実行は **limma-voom** を主軸（軽量・堅牢）。必要最低限の図（MA／Volcano／Top heatmap／診断）を出力。
+
+# 1. データと目的を定義する
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7, fig.height = 4.5)
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(tidyr); library(tibble)
+  library(ggplot2); library(Matrix); library(matrixStats)
+  library(SummarizedExperiment); library(S4Vectors)
+  library(edgeR); library(limma)
+})
+counts_path <- "~/r-gx-tutorial/data/processed/airway_counts_small.csv"
+meta_path   <- "~/r-gx-tutorial/data/processed/airway_meta_small.csv"
+```
+
+## 1) 実データ SummarizedExperiment（airway_small）
+
+```{r load-se}
+# Read CSVs
+cts_tbl  <- readr::read_csv(counts_path, show_col_types = FALSE)
+meta_tbl <- readr::read_csv(meta_path,   show_col_types = FALSE)
+
+# counts: gene 列 + SRR… のサンプル列（airway_small は gene が末尾）
+feature_col <- if ("gene" %in% names(cts_tbl)) "gene" else tail(names(cts_tbl), 1)
+sample_cols <- setdiff(names(cts_tbl), feature_col)
+
+# colData を counts の列順に整列（base で安全）
+stopifnot("sample_id" %in% names(meta_tbl))
+meta_tbl$sample_id <- as.character(meta_tbl$sample_id)
+meta_tbl <- meta_tbl[match(sample_cols, meta_tbl$sample_id), , drop = FALSE]
+
+# counts 行列
+cts_df <- as.data.frame(cts_tbl, stringsAsFactors = FALSE)
+cts_df <- cts_df[, c(feature_col, sample_cols), drop = FALSE]
+rownames(cts_df) <- cts_df[[feature_col]]
+cts_df[[feature_col]] <- NULL
+cts_mat <- as.matrix(cts_df)
+storage.mode(cts_mat) <- "integer"
+
+# row/col/metadata
+rd <- S4Vectors::DataFrame(gene = rownames(cts_mat))
+# group は control / treatment
+meta_tbl$group <- factor(meta_tbl$group, levels = c("control","treatment"))
+cd <- S4Vectors::DataFrame(meta_tbl)
+
+se <- SummarizedExperiment(
+  assays  = list(counts = cts_mat),
+  rowData = rd,
+  colData = cd,
+  metadata = list(source="airway_small", created=Sys.time())
+)
+dim(se); colData(se)
+```
+
+# 2. QCの要点だけを先に（なぜ→何を見るか→次に何をするか）
+
+- **ライブラリサイズ／検出遺伝子数**：極端に小さいサンプルはないか。  
+- **log2-CPM の分布**：外れ／スケール差。  
+- **PCA**：群で分離？（小規模デモなので傾向のみ）
+
+```{r quick-qc}
+lib <- colSums(assay(se, "counts"))
+cpm <- t(t(assay(se, "counts"))/lib * 1e6)
+logcpm <- log2(cpm + 1)
+assay(se, "cpm") <- cpm; assay(se, "logcpm") <- logcpm
+
+qc_tbl <- tibble(sample = colnames(se),
+                 group  = colData(se)$group,
+                 libsize = lib,
+                 detected = colSums(assay(se, "counts") > 0))
+qc_tbl
+
+ggplot(qc_tbl, aes(sample, libsize, fill=group)) + geom_col() + coord_flip() +
+  labs(title="Library size", x=NULL, y="reads")
+
+pc <- prcomp(t(logcpm), center=TRUE, scale.=FALSE)
+aut <- as.data.frame(pc$x[,1:2])
+aut$sample <- rownames(aut)
+aut$group <- colData(se)$group[match(aut$sample, colData(se)$sample_id)]
+ggplot(aut, aes(PC1, PC2, color=group, label=sample)) + geom_point(size=3) +
+  labs(title="PCA (log2-CPM, center-only)") + theme(legend.position="bottom")
+```
+
+# 3. 設計式（design）の考え方：調整→目的効果
+
+- **目的効果**：`group`（treatment vs control）。  
+- **調整（任意）**：`batch` 等が **colData にあれば**加える。なければ2群のみ。  
+- **参照水準**：`control` を参照（`relevel`）。
+
+```{r design}
+cd <- as.data.frame(colData(se))
+cd$group <- relevel(cd$group, ref="control")
+has_batch <- "batch" %in% names(cd)
+
+design <- if (has_batch) {
+  model.matrix(~ batch + group, data = cd)
+} else {
+  model.matrix(~ group, data = cd)
+}
+colnames(design); design
+```
+
+# 4. 最小ワークフローを一度だけ通す（2群・バッチ有無自動）
+
+## 低発現フィルタ → 正規化 → voom → 線形モデル
+
+```{r dge-voom}
+y <- edgeR::DGEList(counts = assay(se, "counts"))
+# 低発現：CPM > 1 in >= 2 samples（デモ用）
+keep <- rowSums(edgeR::cpm(y) > 1) >= 2
+y <- y[keep, , keep.lib.sizes = FALSE]
+y <- edgeR::calcNormFactors(y, method = "TMM")
+
+v <- limma::voom(y, design = design, plot = TRUE)
+fit <- limma::lmFit(v, design)
+fit <- limma::eBayes(fit)
+
+# 係数名の確認と目的係数の抽出（group の treatment レベル）
+coef_names <- colnames(fit$coefficients)
+coef_of_interest <- grep("^group", coef_names, value = TRUE)
+stopifnot(length(coef_of_interest) >= 1)
+coef_of_interest <- tail(coef_of_interest, 1)  # treatment vs control
+top <- limma::topTable(fit, coef = coef_of_interest, number = Inf, sort.by = "P")
+head(top)
+```
+
+# 5. 設計の分岐を**前半フローに溶かし込む**
+
+## 5.1 既知バッチを調整：`~ batch + group`
+
+- バッチが存在する場合は **設計式に入れる**（推奨）。  
+- 可視化のみ `removeBatchEffect` を使って確認するのは有効。
+
+```{r batch-visual, eval=has_batch}
+logcpm <- assay(se, "logcpm")
+logcpm_adj <- limma::removeBatchEffect(logcpm, batch = cd$batch, design = model.matrix(~ group, data = cd))
+pc2 <- prcomp(t(logcpm_adj), center = TRUE, scale. = FALSE)
+aut2 <- as.data.frame(pc2$x[,1:2]); aut2$sample <- rownames(aut2)
+aut2$group <- cd$group[match(aut2$sample, cd$sample_id)]
+ggplot(aut2, aes(PC1, PC2, color = group, label = sample)) + geom_point(size=3) +
+  labs(title = "PCA after removeBatchEffect (viz only)") + theme(legend.position="bottom")
+```
+
+## 5.2 連続共変量（例：RIN）があれば加える
+
+```{r cont-covar, eval=("RIN" %in% names(cd))}
+design2 <- model.matrix(~ RIN + group, data = cd)
+v2 <- limma::voom(y, design = design2, plot = FALSE)
+fit2 <- limma::eBayes(limma::lmFit(v2, design2))
+limma::topTable(fit2, coef = grep("^group", colnames(fit2$coefficients))[1], number = 5)
+```
+
+## 5.3 交互作用（例：`~ batch + group * time`）が必要なら
+
+```{r interact, eval=("time" %in% names(cd) && has_batch)}
+design3 <- model.matrix(~ batch + group * time, data = cd)
+v3 <- limma::voom(y, design = design3, plot = FALSE)
+fit3 <- limma::eBayes(limma::lmFit(v3, design3))
+colnames(fit3$coefficients)
+```
+
+# 6. 可視化（MA／Volcano／Top heatmap）
+
+```{r ma-plot}
+limma::plotMA(fit, coef = coef_of_interest, main = paste("MA:", coef_of_interest))
+abline(h = c(-1, 1), col = "grey", lty = 2)
+```
+
+```{r volcano}
+res <- top
+res$gene <- rownames(res)
+res$FDR  <- p.adjust(res$P.Value, method = "BH")
+res$neglog10p <- -log10(res$P.Value + 1e-300)
+
+topn <- 10
+res$rank <- rank(res$P.Value, ties.method = "first")
+lab <- res$gene
+lab[res$rank > topn] <- ""
+
+ok <- requireNamespace("ggrepel", quietly = TRUE)
+p <- ggplot(res, aes(x = logFC, y = neglog10p)) +
+  geom_point(aes(color = FDR < 0.05)) +
+  geom_vline(xintercept = c(-1, 1), linetype = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = 2) +
+  labs(title = paste("Volcano:", coef_of_interest), x = "log2 fold-change", y = "-log10 p-value") +
+  theme(legend.position = "bottom")
+if (ok) {
+  p + ggrepel::geom_text_repel(aes(label = lab), max.overlaps = 50, show.legend = FALSE)
+} else {
+  p + geom_text(aes(label = lab), vjust = -0.5, show.legend = FALSE)
+}
+```
+
+```{r top-heatmap}
+sel <- head(order(res$P.Value), 30)
+mat <- v$E[sel, , drop = FALSE]
+# スケーリング（行 z）
+mat_z <- t(scale(t(mat)))
+ann <- data.frame(group = cd$group)
+rownames(ann) <- colnames(se)
+if (requireNamespace("pheatmap", quietly = TRUE)) {
+  pheatmap::pheatmap(mat_z, annotation_col = ann, show_rownames = TRUE,
+                     main = paste("Top", length(sel), "genes by p-value"))
+} else {
+  heatmap(mat_z, scale = "none", main = "Top genes")
+}
+```
+
+# 7. 診断：voom 収束／p値分布／残差
+
+```{r diagnostics}
+# voom mean-variance trend は上で plot=TRUE で表示済み
+# p値分布
+hist(res$P.Value, breaks = 30, main = "P-value distribution", xlab = "p-value")
+# 残差のざっくり確認
+qq <- qqnorm(fit$p.value[, which(colnames(fit$p.value) == coef_of_interest)], main = "QQ plot")
+qqline(fit$p.value[, which(colnames(fit$p.value) == coef_of_interest)])
+```
+
+# 8. エクスポート（Chapter 06 で再利用）
+
+```{r export}
+dge_out <- res |> dplyr::select(gene, log2FoldChange = logFC, pvalue = P.Value, adj.P.Val)
+# 欠損・無限値は安全側で処理
+dge_out$log2FoldChange[!is.finite(dge_out$log2FoldChange)] <- NA_real_
+out_csv <- "~/r-gx-tutorial/data/processed/airway_dge_limma_voom.csv"
+readr::write_csv(dge_out, out_csv)
+out_csv
+```
+
+# 9. 付録：最小ヘルパ関数
+
+```{r session}
+sessionInfo()
+```
