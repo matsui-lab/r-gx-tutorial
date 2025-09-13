@@ -130,18 +130,20 @@ ggplot(df_b, aes(x = sample, y = logcpm, fill = group)) +
 ```{r cor-heatmap}
 # 相関（Pearson）
 R <- cor(logcpm, method = "pearson")
+
 # pheatmap がない場合のフォールバック
 ok <- requireNamespace("pheatmap", quietly = TRUE)
 if (ok) {
-  pheatmap::pheatmap(R, annotation_col = data.frame(group = colData(se)$group),
+  ann <- data.frame(group = colData(se)$group)
+  rownames(ann) <- colnames(se)                 # 行名をサンプルIDに
+  # 列順がズレていたら合わせる
+  ann <- ann[colnames(R), , drop = FALSE]
+  pheatmap::pheatmap(R,
+                     annotation_col = ann,
                      main = "Sample correlation (log2-CPM)")
 } else {
   heatmap(R, symm = TRUE, scale = "none", main = "Sample correlation (log2-CPM)")
 }
-
-# クラスタリング樹形図
-hc <- hclust(dist(t(logcpm)), method = "complete")
-plot(hc, main = "Hierarchical clustering (log2-CPM)")
 ```
 
 ```{r pca}
