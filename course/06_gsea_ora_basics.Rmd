@@ -93,7 +93,6 @@ h <- msigdbr(species = "Homo sapiens", category = "H") |>
   (\(df) split(df$gene_symbol, df$gs_name))()
 
 
-
 # 5) GSEA 実行
 set.seed(1)
 fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500) |>
