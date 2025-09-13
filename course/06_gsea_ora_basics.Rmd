@@ -24,17 +24,13 @@ editor: source
 
 ```r
 need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here","ggplot2")
-for (pkg in need) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
-}
+for (pkg in need) if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
 suppressPackageStartupMessages({
   library(readr); library(dplyr); library(fgsea); library(msigdbr)
   library(clusterProfiler); library(here); library(ggplot2)
 })
-
 dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
 dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
-
 .msg <- function(...) message(sprintf("[%s] %s", format(Sys.time(), "%H:%M:%S"), paste0(...)))
 ```
 
@@ -70,8 +66,8 @@ if (file.exists(in_csv)) {
 # 2) デモデータ（MSigDB Hallmark の gene_symbol と整合するように生成）
 if (use_demo) {
   msig_demo <- msigdbr(species = "Homo sapiens", category = "H") |>
-    select(gs_name, gene_symbol) |>
-    mutate(gene_symbol = toupper(gene_symbol))
+    dplyr::select(gs_name, gene_symbol) |>
+    dplyr::mutate(gene_symbol = toupper(gene_symbol))
   genes_pool <- unique(msig_demo$gene_symbol)
   set.seed(1)
   N <- 12000
@@ -87,26 +83,22 @@ rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
 ranks <- rank_stat; names(ranks) <- dge$gene
 ranks <- sort(ranks, decreasing = TRUE)
 
-# 4) 経路定義：MSigDB Hallmark（ヒト）
-h <- msigdbr(species = "Homo sapiens", category = "H") |>
-  mutate(gene_symbol = toupper(gene_symbol)) |>
-  split(x = .$gene_symbol, f = .$gs_name)
+# 4) 経路定義：MSigDB Hallmark（ヒト）  ※ base pipe でも安全な書き方
+h_tbl <- msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::transmute(gs_name, gene_symbol = toupper(gene_symbol))
+h <- split(h_tbl$gene_symbol, h_tbl$gs_name)
 
 # 5) GSEA 実行
 set.seed(1)
 fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
   arrange(padj)
-
 readr::write_csv(fg, here("results","table","06_fgsea_hallmark.csv"))
-
-# 簡易チェック
-print(head(select(fg, pathway, NES, size, padj), 10))
+print(head(dplyr::select(fg, pathway, NES, size, padj), 10))
 ```
 
 ## 1.1 可視化（代表経路）
 
 ```r
-# 例：IFN-γ 応答（存在しない場合は先頭の経路）
 pw <- if ("HALLMARK_INTERFERON_GAMMA_RESPONSE" %in% names(h)) "HALLMARK_INTERFERON_GAMMA_RESPONSE" else names(h)[1]
 plt <- fgsea::plotEnrichment(h[[pw]], ranks) + ggplot2::labs(title = pw)
 ggplot2::ggsave(here("results","fig","06_fgsea_ifng.png"), plt, width=6, height=4)
@@ -117,31 +109,24 @@ plt
 
 # 2. ORA（clusterProfiler）最小例
 
-**そのまま動く最小例（Hallmark を ORA する）**  
-GO/KEGGのインターネット依存やID変換を避け、まずは`clusterProfiler::enricher()`で**用語→遺伝子**の表（TERM2GENE）を渡す方法で確実に動かします。
-
 ```r
 # Hallmark の TERM2GENEを作成（SYMBOLベース）
 gs2gene <- stack(h) |>
-  transmute(gs = ind, gene = values)
+  dplyr::transmute(gs = ind, gene = values)
 
-# 上位/下位のシグネチャ例：上位300を採用（教材として簡単）
-top_up <- names(ranks)[ranks > 0][1:300] |> na.omit()
+# 上位シグネチャ：上位300を採用（教材として簡単）
+top_up <- names(ranks)[ranks > 0][1:min(300, sum(ranks > 0))] |> na.omit()
 
 ora_h <- enricher(gene = top_up, TERM2GENE = gs2gene, pAdjustMethod = "BH")
 readr::write_csv(as_tibble(ora_h@result), here("results","table","06_ora_hallmark.csv"))
-enrichplot::dotplot(ora_h, showCategory = 15)
-```
 
-> **参考（任意）**：GO を使うクラシックな例（`org.Hs.eg.db`が必要）  
-> ```r
-> # library(org.Hs.eg.db)
-> # up  <- dge |>
-> #   filter(padj < 0.05, log2FoldChange > 1) |>
-> #   pull(gene)
-> # ego_up <- enrichGO(up, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP", readable = TRUE)
-> # dotplot(ego_up)
-> ```
+if (requireNamespace("enrichplot", quietly = TRUE)) {
+  enrichplot::dotplot(ora_h, showCategory = 15)
+} else {
+  .msg("[NOTE] enrichplot が無いので、表を表示します。")
+  print(head(as_tibble(ora_h@result), 15))
+}
+```
 
 ---
 
@@ -150,4 +135,3 @@ enrichplot::dotplot(ora_h, showCategory = 15)
 - `results/table/06_fgsea_hallmark.csv` を提出。  
 - 図：`results/fig/06_fgsea_ifng.png`。  
 - ノート：**ランク統計量の定義**・**母集団の取り方**・**多重検定**を明記。
-
