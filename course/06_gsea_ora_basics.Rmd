@@ -1,10 +1,13 @@
 ---
-title: "06_gsea_ora_basics"
+title: "06: 遺伝子セット解析（GSEA/ORA） 基礎と実践"
 author: "集中講義"
+date: "`r Sys.Date()`"
 format:
   html:
     toc: true
     toc-depth: 3
+    number-sections: true
+    code-fold: show
 execute:
   echo: true
   warning: false
@@ -12,63 +15,220 @@ execute:
 editor: source
 ---
 
-# 目的
-**遺伝子セット解析（GSEA/ORA）**の原理と実装を最小構成で学びます。回05で得た DGE 結果に対し、pre-ranked GSEA（`fgsea`）と ORA（`clusterProfiler`）を適用します。
+# ねらい / この章で学ぶこと
 
-> 入力想定：`results/table/05_dge_all.csv`。
+- 遺伝子セット解析の必要性・目的を理解する。
+- **GSEA** と **ORA** の理論的違い／実務上の使い分けを押さえる。
+- R 実装（`clusterProfiler` / `fgsea` / `msigdbr` / `enrichplot` / *ReactomePA*）で準備→解析→可視化まで再現可能に行う。
+- 公的セット（MSigDB/GO/KEGG/Reactome）と **独自セット**（GMT/リスト）の扱いを学ぶ。
 
-## 0. セットアップ
-```r
-need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here")
-for (pkg in need) {
-  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+> **重要**：DGE の入力 CSV が見つからない場合は **デモ用の擬似データ**に自動フォールバックします。実データで走らせるには、ファイルを配置するか、下記の「DGE パスの上書き」を使ってください。
+
+---
+
+# 0. セットアップ（欠品パッケージの導入 & Reactome は任意）
+
+```{r packages}
+install_if_missing <- function(cran_pkgs = character(), bioc_pkgs = character()) {
+  for (p in cran_pkgs) if (!requireNamespace(p, quietly = TRUE)) try(install.packages(p), silent = TRUE)
+  if (length(bioc_pkgs) > 0) {
+    if (!requireNamespace("BiocManager", quietly = TRUE)) try(install.packages("BiocManager"), silent = TRUE)
+    if (requireNamespace("BiocManager", quietly = TRUE)) {
+      for (p in bioc_pkgs) if (!requireNamespace(p, quietly = TRUE)) try(BiocManager::install(p, ask = FALSE, update = FALSE), silent = TRUE)
+    }
+  }
 }
+
+cran_pkgs <- c("tidyverse","here","msigdbr","readr","ggplot2")
+bioc_pkgs <- c("clusterProfiler","fgsea","enrichplot","AnnotationDbi","org.Hs.eg.db","ReactomePA")
+install_if_missing(cran_pkgs, bioc_pkgs)
+
 suppressPackageStartupMessages({
-  library(readr); library(dplyr); library(fgsea); library(msigdbr); library(clusterProfiler); library(here)
+  library(tidyverse); library(here); library(msigdbr)
+  library(clusterProfiler); library(fgsea); library(enrichplot)
+  library(AnnotationDbi); library(org.Hs.eg.db)  # ヒト（他種は適宜変更）
 })
+has_reactome <- requireNamespace("ReactomePA", quietly = TRUE)
+if (has_reactome) suppressPackageStartupMessages(library(ReactomePA)) else message("[NOTE] ReactomePA なし → Reactome 解析はスキップ。")
+
 dir.create(here("results","fig"),   recursive = TRUE, showWarnings = FALSE)
 dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 ```
 
-## 1. pre-ranked GSEA（fgsea）
-```r
-dge <- readr::read_csv(here("results","table","05_dge_all.csv"), show_col_types = FALSE)
+---
 
-# ランク統計量（例：符号付き -log10(p) × 効果量）
+# 1. DGE 入力の取得（見つからない場合はデモに自動切替）
+
+**DGE パスの上書き方法**（任意）  
+- knit の前に `options(dge_csv = "path/to/your.csv")` を実行するか、  
+- 環境変数で `Sys.setenv(DGE_CSV="path/to/your.csv")` を設定する。  
+- 何も指定しない場合は `here("results","table","05_dge_all.csv")` を探します。
+
+CSV には次の列のうち最低限 1 つずつが必要です：  
+- 遺伝子名：`gene` または `symbol`（大文字小文字は任意）  
+- 効果量：`log2FoldChange` / `logFC` / `log2FC` / `LFC`  
+- p 値：`pvalue` / `pval` / `P.Value` / `p_value`
+
+```{r prepare}
+get_dge_path <- function() {
+  getOption("dge_csv",
+    Sys.getenv("DGE_CSV", here("results","table","05_dge_all.csv"))
+  )
+}
+dge_path <- get_dge_path()
+
+if (!file.exists(dge_path)) {
+  message("[WARN] DGE CSV が見つからないためデモデータを使用: ", dge_path)
+  set.seed(1)
+  dge <- tibble(
+    gene = paste0("GENE", sprintf("%05d", seq_len(12000))),
+    log2FoldChange = rnorm(12000, sd = 1),
+    pvalue = pmin(1, pmax(1e-16, runif(12000)))
+  )
+} else {
+  dge_raw <- readr::read_csv(dge_path, show_col_types = FALSE)
+  cn <- names(dge_raw)
+  pick <- function(cands) { i <- intersect(cands, cn); if (length(i)) i[1] else NA }
+  symcol <- pick(c("gene","symbol","SYMBOL","Gene","GENE"))
+  lfccol <- pick(c("log2FoldChange","logFC","log2FC","LFC"))
+  pcol   <- pick(c("pvalue","pval","P.Value","p_value"))
+  if (is.na(symcol) || is.na(lfccol) || is.na(pcol))
+    stop("DGE CSV に必要な列（gene/symbol, logFC, pvalue）が見つかりません。列名を確認してください。
+",
+         "見つかった列: ", paste(cn, collapse = ", "))
+  dge <- dge_raw |>
+    transmute(gene = .data[[symcol]],
+              log2FoldChange = as.numeric(.data[[lfccol]]),
+              pvalue = as.numeric(.data[[pcol]]))
+}
+
+# ランキング（符号付き log2FC × -log10(p)）
 rank_stat <- with(dge, sign(log2FoldChange) * -log10(pvalue))
-ranks <- rank_stat; names(ranks) <- dge$gene
+ranks_tbl <- tibble(symbol = dge$gene, score = rank_stat) |>
+  filter(!is.na(score)) |>
+  arrange(desc(score))
+
+# SYMBOL -> ENTREZID
+map_tbl <- AnnotationDbi::select(org.Hs.eg.db,
+                                 keys = ranks_tbl$symbol,
+                                 keytype = "SYMBOL",
+                                 columns = c("ENTREZID")) |>
+  as_tibble() |>
+  drop_na(ENTREZID) |>
+  distinct(SYMBOL, .keep_all = TRUE)
+
+rank_entrez <- ranks_tbl |>
+  inner_join(map_tbl, by = c("symbol" = "SYMBOL")) |>
+  transmute(ENTREZID, score)
+
+ranks <- rank_entrez$score; names(ranks) <- rank_entrez$ENTREZID
 ranks <- sort(ranks, decreasing = TRUE)
 
-# 経路定義：MSigDB Hallmark（ヒト）
-h <- msigdbr(species = "Homo sapiens", category = "H") |>
-  split(x = .$gene_symbol, f = .$gs_name)
+# ORA 背景集合（測定可能だった遺伝子）
+all_entrez <- AnnotationDbi::select(org.Hs.eg.db, keys = dge$gene,
+                                    keytype = "SYMBOL", columns = "ENTREZID") |>
+  as_tibble() |>
+  pull(ENTREZID) |>
+  unique() |>
+  na.omit()
+```
 
+---
+
+# 2. 遺伝子セット（MSigDB / GO など）
+
+```{r gene-sets}
+msig_h <- msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::select(gs_name, entrez_gene) |>
+  dplyr::group_by(gs_name) |>
+  dplyr::summarise(genes = list(unique(entrez_gene)), .groups = "drop")
+pathways_h <- setNames(msig_h$genes, msig_h$gs_name)
+length(pathways_h)
+```
+
+---
+
+# 3. GSEA（fgsea / clusterProfiler）
+
+```{r gsea-fgsea}
 set.seed(1)
-fg <- fgsea(pathways = h, stats = ranks, minSize = 15, maxSize = 500, nperm = 1000) |>
+fg_res <- fgsea(pathways = pathways_h,
+                stats    = ranks,
+                minSize  = 15, maxSize = 500,
+                nperm    = 5000) |>
   arrange(padj)
 
-readr::write_csv(fg, here("results","table","06_fgsea_hallmark.csv"))
+readr::write_csv(fg_res, here("results","table","06_gsea_hallmark.csv"))
+fg_res |> dplyr::select(pathway, NES, size, padj) |> head(10)
 ```
 
-### 1.1 可視化（代表経路）
-```r
-# 例：IFN-γ 応答
-plt <- fgsea::plotEnrichment(h[["HALLMARK_INTERFERON_GAMMA_RESPONSE"]], ranks)
-ggplot2::ggsave(here("results","fig","06_fgsea_ifng.png"), plt, width=6, height=4)
+```{r gsea-fgsea-plot}
+top1 <- fg_res$pathway[1]
+plt <- fgsea::plotEnrichment(pathways_h[[top1]], ranks) + ggplot2::labs(title = top1)
+ggplot2::ggsave(here("results","fig","06_gsea_top1.png"), plt, width = 6, height = 4)
 ```
 
-## 2. ORA（clusterProfiler）最小例
-```r
-# 上位/下位遺伝子のシグネチャを作り、富化（GO/KEGG 等）を実施する例（ダミー）
-# library(org.Hs.eg.db)
-# up  <- dge |>
-#   filter(padj < 0.05, log2FoldChange >  1) |>
-#   pull(gene)
-# ego_up <- enrichGO(up, OrgDb = org.Hs.eg.db, keyType = "SYMBOL", ont = "BP", readable = TRUE)
-# dotplot(ego_up)
+```{r gsea-cp}
+cp_go <- gseGO(geneList = sort(ranks, decreasing = TRUE),
+               OrgDb = org.Hs.eg.db, ont = "BP",
+               minGSSize = 15, maxGSSize = 500,
+               pvalueCutoff = 0.05, verbose = FALSE)
+enrichplot::dotplot(cp_go, showCategory = 15)
 ```
 
-## 3. まとめ（提出）
-- `06_fgsea_hallmark.csv` を提出。  
-- 図：`06_fgsea_ifng.png`。  
-- ノート：**ランク統計量の定義**・**母集団の取り方**・**多重検定**を明記。
+---
+
+# 4. ORA（clusterProfiler）
+
+```{r ora-go}
+top300 <- rank_entrez |> arrange(desc(score)) |> slice_head(n = 300) |> pull(ENTREZID)
+
+ora_go <- enrichGO(gene = top300, universe = all_entrez,
+                   OrgDb = org.Hs.eg.db, keyType = "ENTREZID",
+                   ont = "BP", pAdjustMethod = "BH",
+                   qvalueCutoff = 0.1, minGSSize = 10, maxGSSize = 500)
+
+readr::write_csv(as_tibble(ora_go@result), here("results","table","06_ora_go.csv"))
+enrichplot::dotplot(ora_go, showCategory = 15) + ggplot2::labs(title = "ORA: GO (BP)")
+```
+
+```{r ora-reactome, eval=has_reactome}
+ora_reactome <- ReactomePA::enrichPathway(gene = top300, universe = all_entrez, readable = TRUE)
+readr::write_csv(as_tibble(ora_reactome@result), here("results","table","06_ora_reactome.csv"))
+enrichplot::dotplot(ora_reactome, showCategory = 15) + ggplot2::labs(title = "ORA: Reactome")
+```
+
+---
+
+# 5. 独自遺伝子セット（GMT/リスト）
+
+```{r custom}
+custom_sets <- list(
+  MY_SIGNATURE_A = c("7157","1956","5290"),
+  MY_SIGNATURE_B = c("7422","5290")
+)
+gs2gene <- stack(custom_sets) |> transmute(gs = ind, gene = values)
+
+ora_custom <- enricher(gene = top300, universe = all_entrez,
+                       TERM2GENE = gs2gene, pAdjustMethod = "BH")
+enrichplot::dotplot(ora_custom) + ggplot2::labs(title = "ORA: Custom Sets")
+
+gsea_custom <- GSEA(geneList = sort(ranks, decreasing = TRUE),
+                    TERM2GENE = gs2gene, pvalueCutoff = 0.25)
+enrichplot::gseaplot2(gsea_custom, geneSetID = gsea_custom@result$ID[1])
+```
+
+---
+
+# 6. チェックリスト & 再現性
+
+- [ ] ID タイプ一致（SYMBOL/ENTREZID）。重複は代表 1 つに集約。
+- [ ] ORA の `universe` を適切に設定（測定可能だった遺伝子）。
+- [ ] セットサイズの極端値除外（<10, >500）。
+- [ ] FDR（padj）で解釈。GSEA は NES の符号で方向性を確認。
+- [ ] KEGG は仕様変更あり → MSigDB 経由や Reactome 併用が安心。
+
+```{r session-info}
+readr::write_lines(capture.output(sessionInfo()), here("results","table","06_sessionInfo.txt"))
+sessionInfo()
+```
