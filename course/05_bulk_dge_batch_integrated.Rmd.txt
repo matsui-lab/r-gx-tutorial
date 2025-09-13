@@ -1,0 +1,356 @@
+---
+title: "Bulk RNA-seq DGE：全体像→設計→実行→解釈（初心者のための一体型ガイド）"
+author: "matsui-lab"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width=7, fig.height=4.5)
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  # library(DESeq2)    # 実行環境に応じて有効化（重い処理は eval=FALSE）
+  # library(edgeR); library(limma)
+})
+set.seed(1)
+```
+
+# 0. まず全体像（このRmdの読み方）
+本資料は**一つの物語**として進みます。前半（0〜4章）で**全体像**と**基本ワークフロー**を体験し、後半（5章以降）で**実験設計の分岐**（バッチ・共変量・交互作用・ペア・多群）と**結果の解釈を深掘り**します。\
+途中で出てくる「チェックポイント」は、**初心者がつまずきやすい箇所**を先回りして確認するためのものです。
+
+# 1. データと目的を定義する
+**目的**：Ctrl vs Treat の**差次的発現（DGE）**を統計的に検出し、効果量（log2FC）と不確実性（SE, FDR）を解釈できるようにする。
+
+```{r demo-data}
+# 1) デモ用 SummarizedExperiment（800 gene × 12 sample）
+G <- 800; N <- 12
+mat <- matrix(rnbinom(G*N, mu=50, size=1), nrow=G, ncol=N,
+              dimnames=list(paste0("gene",1:G), paste0("S",1:N)))
+col_anno <- S4Vectors::DataFrame(
+  sample = paste0("S",1:N),
+  group  = rep(c("Ctrl","Treat"), each=N/2),
+  batch  = rep(c("A","B"), times=N/2),
+  RIN    = round(rnorm(N, 8.5, 0.6), 1)
+)
+se <- SummarizedExperiment(assays=list(counts=mat), colData=col_anno)
+
+# 疑似DE（Treatで20遺伝子を2倍）
+idx <- sample(1:G, 20)
+assay(se, "counts")[idx, colData(se)$group=="Treat"] <-
+  round(assay(se, "counts")[idx, colData(se)$group=="Treat"] * 2)
+se
+```
+
+**チェックポイント**（ここで確認）
+- 行=遺伝子、列=サンプルか？ `assay(se, "counts")` の**行名/列名がユニーク**か？
+- `colData(se)` に**群やバッチ等の説明変数**が揃っているか？
+
+# 2. QCの要点だけを先に（なぜ→何を見るか→次に何をするか）
+- **ライブラリサイズ**／**検出遺伝子数**：極端な小ささは要注意
+- **ミトコンドリア率**（bulkは参考指標）
+- **PCA / クラスタリング**：群やバッチでの分離をざっくり把握
+
+```{r quick-qc}
+libsize  <- colSums(assay(se, "counts"))
+detgenes <- colSums(assay(se, "counts") > 0)
+op <- par(mfrow=c(1,2), mar=c(5,4,2,1))
+barplot(libsize, las=2, main="Library size")
+plot(libsize, detgenes, pch=16, main="Detected vs Library"); abline(lm(detgenes~libsize), lty=2)
+par(op)
+
+# 軽量版 log2CPM → PCA（探索）
+logcpm <- log2(t(t(assay(se, "counts"))/libsize)*1e6 + 1)
+pc <- prcomp(t(logcpm))
+plot(pc$x[,1], pc$x[,2], pch=19, xlab="PC1", ylab="PC2", main="PCA (log2CPM)")
+text(pc$x[,1], pc$x[,2], labels=colnames(se), pos=3, cex=.8)
+```
+
+**チェックポイント**
+- 明らかな**外れ**があれば、実験ログやMultiQCログと付き合わせる。
+- 除外の前に、後述の**設計式で調整（バッチや共変量）**できるかを検討。
+
+# 3. 設計式（design）の考え方：調整→目的効果
+**原則**：設計式は「**調整因子を左に**、**目的の効果を右端に**」。\
+例）「群差が主目的で、既知バッチ A/B を調整」→ `~ batch + group`。\
+この並びは**係数の解釈**と**contrast指定**を明確にします。
+
+# 4. 最小ワークフローを一度だけ通す（2群・バッチ無）
+以下は**最小の一周**です。まずは「DGEはこう流れる」を体験し、その後で設計の分岐に進みます。
+
+```{r dge-minimal, eval=FALSE}
+library(DESeq2)
+se_min <- se
+# 低発現フィルタ（例： n/3 サンプルで >=10）
+keep <- rowSums(assay(se_min,"counts") >= 10) >= ceiling(ncol(se_min)/3)
+se_min <- se_min[keep, ]
+
+# 目的：Ctrl vs Treat
+colData(se_min)$group <- relevel(factor(colData(se_min)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_min, design = ~ group)  # 設計式の骨格
+dds <- DESeq(dds)                              # サイズ因子→分散→NB GLM→検定
+res <- results(dds, name="group_Treat_vs_Ctrl")
+res_shr <- lfcShrink(dds, coef="group_Treat_vs_Ctrl", type="apeglm")
+
+plotMA(res_shr, ylim=c(-4,4))
+vsd <- vst(dds, blind=TRUE); plotPCA(vsd, intgroup="group")
+head(as.data.frame(res_shr)[,c("log2FoldChange","lfcSE","pvalue","padj")])
+```
+
+**ここまでの意味**：
+- **DESeq()** が内部で行うこと＝**サイズ因子**推定→**分散**推定→**NB GLM**当てはめ→**検定（Wald/LRT）**。
+- **lfcShrink()** は LFC の**不確実性を縮約**し、効果量の**安定解釈**を助ける。
+
+---
+
+# 5. 設計の分岐を**前半フローに溶かし込む**
+以降は**4章の最小ワークフロー**に**1行ずつ要素を足す**だけで進みます。初心者は「必要な分岐だけを採用」してください。
+
+## 5.1 既知バッチを調整：`~ batch + group`
+```{r design-batch, eval=FALSE}
+library(DESeq2)
+se_b <- se
+keep <- rowSums(assay(se_b,"counts") >= 10) >= ceiling(ncol(se_b)/3)
+se_b <- se_b[keep, ]
+
+colData(se_b)$batch <- factor(colData(se_b)$batch)
+colData(se_b)$group <- relevel(factor(colData(se_b)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_b, design = ~ batch + group)  # ← 最小例に「batch」を左側へ追加
+dds <- DESeq(dds)
+res <- results(dds, name="group_Treat_vs_Ctrl")
+
+# 診断：バッチ影響が軽減されたか？
+vsd <- vst(dds, blind=TRUE)
+plotPCA(vsd, intgroup=c("group","batch"))
+```
+
+**重要**：**完全交絡**（例：BatchA=Ctrlのみ）は推定不能。設計段階の工夫が必要です。
+
+## 5.2 連続共変量を調整：`~ RIN + group`
+```{r design-cov, eval=FALSE}
+library(DESeq2)
+se_c <- se
+keep <- rowSums(assay(se_c,"counts") >= 10) >= ceiling(ncol(se_c)/3)
+se_c <- se_c[keep, ]
+
+colData(se_c)$RIN   <- as.numeric(colData(se_c)$RIN)
+colData(se_c)$group <- relevel(factor(colData(se_c)$group), ref="Ctrl")
+
+dds <- DESeqDataSet(se_c, design = ~ RIN + group)  # ← 共変量を左に
+dds <- DESeq(dds)
+res <- results(dds, name="group_Treat_vs_Ctrl")
+```
+
+**使い分け**：`~ batch + RIN + group` のように**複数の調整**も可。係数の符号と有意性で妥当性を確認。
+
+## 5.3 交互作用：`~ batch + group * time`
+```{r design-interaction, eval=FALSE}
+library(DESeq2)
+se_i <- se
+keep <- rowSums(assay(se_i,"counts") >= 10) >= ceiling(ncol(se_i)/3)
+se_i <- se_i[keep, ]
+
+# 例：簡易に time 因子を付与
+colData(se_i)$time  <- factor(rep(c("0h","24h","48h"), length.out=ncol(se_i)))
+colData(se_i)$group <- relevel(factor(colData(se_i)$group), ref="Ctrl")
+colData(se_i)$batch <- factor(colData(se_i)$batch)
+
+dds <- DESeqDataSet(se_i, design = ~ batch + group * time)
+dds <- DESeq(dds, test="LRT", reduced = ~ batch + group + time)  # 交互作用有無の一括検定
+res_int <- results(dds)
+
+# 特定時間点での群差（複合contrast）
+dds <- DESeq(dds)                                # Wald で係数名を使う場合は再実行
+resultsNames(dds)
+res_24 <- results(dds, contrast=list(c("group_Treat_vs_Ctrl","groupTreat.time24h")))
+```
+
+**Tips**：`group * time` は `group + time + group:time`。係数名は `resultsNames(dds)` で必ず確認。
+
+## 5.4 ペア設計（被験者内比較）：`~ subject + condition`
+```{r design-paired, eval=FALSE}
+library(DESeq2)
+se_p <- se
+keep <- rowSums(assay(se_p,"counts") >= 10) >= ceiling(ncol(se_p)/3)
+se_p <- se_p[keep, ]
+
+# 疑似subject/condition（各subjectにbefore/after）
+colData(se_p)$subject   <- factor(rep(1:(ncol(se_p)/2), each=2))
+colData(se_p)$condition <- factor(rep(c("before","after"), times=ncol(se_p)/2))
+colData(se_p)$condition <- relevel(colData(se_p)$condition, ref="before")
+
+dds <- DESeqDataSet(se_p, design = ~ subject + condition)  # subjectはブロック
+dds <- DESeq(dds)
+res <- results(dds, name="condition_after_vs_before")
+```
+
+## 5.5 多群（ANOVA型）→ ペア対比へ
+```{r design-multigroup, eval=FALSE}
+library(DESeq2)
+se_m <- se
+keep <- rowSums(assay(se_m,"counts") >= 10) >= ceiling(ncol(se_m)/3)
+se_m <- se_m[keep, ]
+
+colData(se_m)$grp3 <- factor(rep(c("A","B","C"), length.out=ncol(se_m)))
+dds <- DESeqDataSet(se_m, design = ~ grp3)
+dds <- DESeq(dds, test="LRT", reduced=~1)     # 全体差
+res_all <- results(dds)
+
+dds <- DESeq(dds)                              # Waldでペア差へ
+res_BA <- results(dds, contrast=c("grp3","B","A"))
+res_CA <- results(dds, contrast=c("grp3","C","A"))
+```
+
+# 6. 検定結果を**どう読むか**（初心者むけの順番）
+1. **目的の係数/contrast**を決める（`resultsNames()`で確認）。\
+2. **効果量（log2FC）**と**padj（FDR）**を並べて眺める。\
+3. **火山図/MA**で全体感を掴む → 上位遺伝子の**normalized counts**を群別に確認。
+
+```{r viz-interpret, eval=FALSE}
+plotMA(res)                                    # or plotMA(res_shr)
+res_df <- as.data.frame(res)
+with(res_df, plot(log2FoldChange, -log10(padj), pch=16, main="Volcano"))
+# 上位遺伝子のカウント（直観の確認）
+top <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene=top, intgroup="group")
+```
+
+**注意**：LFC縮約後の値を**解釈の中心**に。検出力だけでなく**実学的な大きさ**（例：|LFC|≥1）も併記。
+
+# 7. よくある落とし穴と回避法（統合版）
+- **交絡**：`table(group,batch)` に0セルが多い→**推定不能**。設計で避ける。\
+- **因子レベル**：`relevel()` の**基準**で符号が変わる。\
+- **過補正**：`removeBatchEffect/ComBat`は可視化用途、**推定は設計式**で。\
+- **フィルタ**：低発現を除くが、除外基準はメモ（`metadata` やノート）。\
+- **再現性**：`sessionInfo()` と `metadata(dds)` に主要決定を記録。
+
+# 8. チェックリスト（コピーして使う）
+- [ ] カウント・`colData`・（必要なら`rowData`）は**ID整合**している
+- [ ] 設計式は**調整→目的効果**の順で書いた
+- [ ] `resultsNames()` で係数名を確認し、`contrast` を明示
+- [ ] 可視化は**vst()/rlog()** や**log2CPM**で、推定は**raw→モデル**で一貫
+- [ ] 主要判断（外れ・閾値・設計変更）を**記録**
+
+# 9. 付録：最小ヘルパ関数
+```{r helpers}
+keep_min_counts <- function(se, min_count=10, min_samples=NULL){
+  if (is.null(min_samples)) min_samples <- ceiling(ncol(se)/3)
+  se[rowSums(assay(se,"counts") >= min_count) >= min_samples, ]
+}
+```
+
+> **まとめ**：**ひとつの最小ワークフロー**を起点に、「左に調整、右に目的効果」を足し引きするだけで、ほぼ全ての設計に拡張できます。検定は**設計式**で、解釈は**効果量＋FDR**で。必要なところにだけ分岐を差し込み、全体像を崩さず前へ進みましょう。
+
+
+
+## 付録：Chapter 06 用のDGEエクスポート（自動・堅牢）
+
+```{r export_for_ch06, echo=TRUE}
+# 目的：06_gsea_ora_basics.Rmd が読む CSV をここで確実に出力する
+# 出力先（指定）：
+out_dir_abs <- "/nfshome/matsui/r-gx-tutorial/results/table"
+out_csv_abs <- file.path(out_dir_abs, "05_dge_all.csv")
+
+# 可能ならプロジェクト相対にも出力（任意、授業用）
+out_dir_rel <- "results/table"
+out_csv_rel <- file.path(out_dir_rel, "05_dge_all.csv")
+
+dir.create(out_dir_abs, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_dir_rel, recursive = TRUE, showWarnings = FALSE)
+
+# 候補オブジェクトから DGE テーブルを拾う（DESeq2 / edgeR / limma など想定）
+pick_first_df <- function(cands) {
+  for (nm in cands) {
+    if (exists(nm, inherits = TRUE)) {
+      obj <- get(nm, inherits = TRUE)
+      if (is.data.frame(obj)) return(obj)
+    }
+  }
+  # rownames ベースのDESeq2::resultsの可能性：'res' などが data.frame でない場合あり
+  if (exists("res", inherits = TRUE)) {
+    obj <- get("res", inherits = TRUE)
+    if (!is.data.frame(obj) && !is.null(tryCatch(as.data.frame(obj), error=function(e) NULL))) {
+      return(as.data.frame(obj))
+    }
+  }
+  NULL
+}
+
+# よくある変数名の候補
+candidates <- c("dge_res","deg_res","de_table","deg_table","results_tbl","results_df",
+                "res","tt","deg","dge","fit2","topTable_res","dgeAll","tbl_dge")
+
+df <- pick_first_df(candidates)
+
+# 見つからない場合は停止せず、可能なヒントを出す
+if (is.null(df)) {
+  message("[WARN] DGEテーブルの候補オブジェクトが見つかりませんでした。",
+          " 'res' や 'dge_res' 等のオブジェクト名を確認してください。",
+          " ここではデモ用に仮データを書き出します（06での動作確認用）。")
+  set.seed(1)
+  df <- data.frame(
+    gene = paste0("GENE", sprintf("%05d", 1:1000)),
+    log2FoldChange = rnorm(1000),
+    pvalue = runif(1000)
+  )
+}
+
+# 列名を正規化：gene / log2FoldChange / pvalue
+cn <- names(df)
+pick <- function(cands) { i <- intersect(cands, cn); if (length(i)) i[1] else NA_character_ }
+
+gene_col <- pick(c("gene","Gene","GENE","symbol","SYMBOL","genes","gene_id","ENSEMBL","ENSEMBLID","Row.names","rownames"))
+lfc_col  <- pick(c("log2FoldChange","logFC","log2FC","LFC"))
+p_col    <- pick(c("pvalue","pval","P.Value","PValue","p_value","Pr..F."))
+
+# rownames が遺伝子のときに対応
+if (is.na(gene_col) && !is.null(rownames(df)) && any(nchar(rownames(df)) > 0)) {
+  df$gene <- rownames(df)
+  gene_col <- "gene"
+}
+
+# logFC → log2FoldChange 名に寄せる（edgeR/limma は log2なのでOK）
+if (is.na(lfc_col) && "logFC" %in% cn) lfc_col <- "logFC"
+
+# p値が FDR系しかない場合は代用（最悪のフォールバック）
+if (is.na(p_col)) {
+  if ("p_adj" %in% cn) p_col <- "p_adj"
+  if ("padj" %in% cn) p_col <- "padj"
+}
+
+# 最終テーブル（最低限の3列）
+export_tbl <- df |>
+  dplyr::transmute(
+    gene = .data[[gene_col]],
+    log2FoldChange = as.numeric(.data[[lfc_col]]),
+    pvalue = as.numeric(.data[[p_col]])
+  )
+
+# 欠損や無限大を安全側に
+export_tbl <- export_tbl |>
+  dplyr::filter(!is.na(gene)) |>
+  dplyr::mutate(
+    log2FoldChange = ifelse(is.finite(log2FoldChange), log2FoldChange, NA_real_),
+    pvalue = ifelse(is.finite(pvalue), pvalue, NA_real_)
+  ) |>
+  dplyr::filter(!is.na(log2FoldChange), !is.na(pvalue))
+
+# 書き出し（絶対パス & 相対パス）
+readr::write_csv(export_tbl, out_csv_abs)
+readr::write_csv(export_tbl, out_csv_rel)
+
+message(sprintf("[OK] Chapter 06 用 DGE を書き出しました：\n  - %s\n  - %s", out_csv_abs, out_csv_rel))
+```
+
