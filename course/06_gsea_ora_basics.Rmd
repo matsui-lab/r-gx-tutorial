@@ -88,9 +88,11 @@ ranks <- rank_stat; names(ranks) <- dge$gene
 ranks <- sort(ranks, decreasing = TRUE)
 
 # 4) 経路定義：MSigDB Hallmark（ヒト）
-h_tbl <- msigdbr(species = "Homo sapiens", category = "H") |>
-  dplyr::transmute(gs_name, gene_symbol = toupper(gene_symbol))
-h <- split(h_tbl$gene_symbol, h_tbl$gs_name)
+h <- msigdbr(species = "Homo sapiens", category = "H") |>
+  dplyr::mutate(gene_symbol = toupper(gene_symbol)) |>
+  (\(df) split(df$gene_symbol, df$gs_name))()
+
+
 
 # 5) GSEA 実行
 set.seed(1)
