@@ -11,7 +11,7 @@ data(airway)
 expr <- as.data.frame(SummarizedExperiment::assay(airway)[1:500, 1:6])
 expr$gene <- rownames(expr)
 readr::write_csv(expr, file = file.path("data","processed","airway_counts_small.csv"))
-meta <- as.data.frame(SummarizedExperiment::colData(airway))[1:6, c("dex")]
+meta <- as.data.frame(SummarizedExperiment::colData(airway))[1:6, ]
 meta$sample_id <- colnames(airway)[1:6]
 meta$group <- ifelse(meta$dex == "trt", "treatment", "control")
 readr::write_csv(meta[, c("sample_id","group")], file = file.path("data","processed","airway_meta_small.csv"))
