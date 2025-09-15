@@ -52,7 +52,7 @@ dge <- readr::read_csv(dge_csv, show_col_types = FALSE)
 
 # ENSEMBL 末尾のバージョン番号（.12 等）があれば除去
 dge <- dge |>
-  mutate(ensembl = sub("\..*$", "", gene))
+  mutate(ensembl = sub("\\..*$", "", gene))
 
 # このデータは ENSEMBL が前提（判定は一応実装）
 is_ensembl <- all(grepl("^ENSG", dge$ensembl))
