@@ -1,0 +1,244 @@
+
+---
+title: "06_gsea_ora_basics（airway_small 実データ版＋ID変換）"
+author: "集中講義（matsui-lab）"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+# 目的
+
+- **回05で得た DGE 結果（airway_small）**を用い、**pre-ranked GSEA（fgsea）** と **ORA（clusterProfiler）** を最小構成で実行する。  
+- 本データの遺伝子IDは **ENSEMBL** であるため、**遺伝子シンボル（SYMBOL）で実行する場合は変換プロセス**を明示して組み込む。
+
+> **注意**：今回の `airway_small` の `colData` は `sample_id` と `group` のみです（`batch` 等はありません）。本章では **DGEテーブル（CSV）からの解析**に限定します。
+
+# 1. セットアップと入力
+
+```{r}
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(tidyr); library(tibble)
+  library(stringr); library(ggplot2)
+})
+
+# 解析に使うパッケージ（ある場合のみ使用）
+has_fgsea  <- requireNamespace("fgsea", quietly = TRUE)
+has_msigdbr<- requireNamespace("msigdbr", quietly = TRUE)
+has_cp     <- requireNamespace("clusterProfiler", quietly = TRUE)
+has_enrich <- requireNamespace("enrichplot", quietly = TRUE)
+has_anno   <- requireNamespace("AnnotationDbi", quietly = TRUE) &&
+              requireNamespace("org.Hs.eg.db",  quietly = TRUE)
+
+# 入力：回05で書き出した DGE テーブル（limma-voom）
+dge_csv <- "~/r-gx-tutorial/data/processed/airway_dge_limma_voom.csv"
+
+# 出力先（相対パス）
+dir_tab <- "results/table"; dir_fig <- "results/fig"
+dir.create(dir_tab, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_fig, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 2. DGE テーブルの読み込みと **ID 変換（ENSEMBL → SYMBOL/ENTREZ）**
+
+```{r}
+dge <- readr::read_csv(dge_csv, show_col_types = FALSE)
+
+# ENSEMBL 末尾のバージョン番号（.12 等）があれば除去
+dge <- dge |>
+  mutate(ensembl = sub("\\..*$", "", gene))
+
+# このデータは ENSEMBL が前提（判定は一応実装）
+is_ensembl <- all(grepl("^ENSG", dge$ensembl))
+
+# 可能であれば org.Hs.eg.db で SYMBOL/ENTREZ を付与
+if (is_ensembl && has_anno) {
+  m <- AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db,
+                             keys     = unique(dge$ensembl),
+                             keytype  = "ENSEMBL",
+                             columns  = c("SYMBOL","ENTREZID"))
+  dge2 <- dge |> left_join(m, by = c("ensembl" = "ENSEMBL"))
+} else if (!is_ensembl) {
+  dge2 <- dge |> rename(SYMBOL = gene)
+} else {
+  message("org.Hs.eg.db が見つからないため、ID 変換をスキップして ENSEMBL のまま解析します。")
+  dge2 <- dge
+}
+
+# 変換率の表示（SYMBOL ベースの解析をする際の参考）
+if ("SYMBOL" %in% names(dge2)) {
+  map_rate <- mean(!is.na(dge2$SYMBOL))
+  cat(sprintf("SYMBOL へのマッピング率: %.1f%% (%d/%d)\n",
+              100*map_rate, sum(!is.na(dge2$SYMBOL)), nrow(dge2)))
+}
+head(dge2)
+```
+
+# 3. pre-ranked GSEA（MSigDB Hallmark）
+
+**前提**：`msigdbr` と `fgsea` がインストールされている場合のみ実行します。  
+Hallmark は **遺伝子シンボル**ベースなので、**SYMBOL に変換**してからランク付けします。
+
+```{r}
+if (has_msigdbr && has_fgsea) {
+  # ランク統計量：ここでは単純に log2FoldChange を採用（必要に応じて t統計 などに変更可）
+  dge_symbol <- dge2 |>
+    filter(!is.na(SYMBOL)) |>
+    group_by(SYMBOL) |>
+    summarise(stat = median(log2FoldChange, na.rm = TRUE), .groups = "drop")
+
+  ranks <- dge_symbol$stat; names(ranks) <- dge_symbol$SYMBOL
+  ranks <- sort(ranks, decreasing = TRUE)
+
+  # Hallmark gene sets（SYMBOL）
+  hm <- msigdbr::msigdbr(species = "Homo sapiens", category = "H") |>
+    dplyr::select(gs_name, gene_symbol)
+  gs_list <- split(hm$gene_symbol, hm$gs_name)
+
+  # fgsea 実行
+  fg <- fgsea::fgsea(pathways = gs_list, stats = ranks, nperm = 1000,
+                     minSize = 10, maxSize = 500)
+  fg_res <- dplyr::as_tibble(fg) |>
+    arrange(padj)
+
+  # 保存＆プロット
+  out_fg <- file.path(dir_tab, "06_fgsea_hallmark.csv")
+  readr::write_csv(fg_res, out_fg)
+
+  topn <- min(15, nrow(fg_res))
+  if (topn > 0) {
+    p <- ggplot(fg_res[1:topn,],
+                aes(x = NES, y = reorder(pathway, NES), size = size, color = padj)) +
+      geom_point() +
+      scale_color_continuous(trans = "log10") +
+      labs(title = "fgsea: Hallmark (top by padj)", x = "NES", y = NULL)
+    print(p)
+  } else {
+    cat("fgsea: 有意な経路が 0 件でした。\n")
+  }
+} else {
+  cat("fgsea/msigdbr が無いため、GSEA をスキップしました。\n")
+}
+```
+
+# 4. ORA（Over-Representation Analysis）
+
+## 4.1 Hallmark（`enricher`）
+
+上位遺伝子（例：**FDR < 0.05 且つ log2FC > 1**）を **SYMBOL** で抽出し、Hallmark の ORA を実行します。**母集団（universe）**は DGE 表に現れる **全SYMBOL** に設定します。
+
+```{r}
+if (has_msigdbr && has_cp) {
+  hm <- msigdbr::msigdbr(species = "Homo sapiens", category = "H") |>
+    dplyr::select(gs_name, gene_symbol)
+  TERM2GENE <- hm |> transmute(term = gs_name, gene = gene_symbol)
+
+  d_all <- dge2 |> filter(!is.na(SYMBOL)) |> distinct(SYMBOL, .keep_all = TRUE)
+  universe <- d_all$SYMBOL
+
+  up <- d_all |>
+    filter(!is.na(adj.P.Val)) |>
+    filter(adj.P.Val < 0.05, log2FoldChange > 1) |>
+    pull(SYMBOL) |> unique()
+
+  if (length(up) >= 5) {
+    ora_h <- clusterProfiler::enricher(gene = up,
+                                       universe = universe,
+                                       TERM2GENE = TERM2GENE,
+                                       pAdjustMethod = "BH",
+                                       pvalueCutoff = 0.05,
+                                       qvalueCutoff = 0.2,
+                                       minGSSize = 5)
+
+    res_df <- as.data.frame(ora_h)
+    if (nrow(res_df) > 0) {
+      out_ora <- file.path(dir_tab, "06_ora_hallmark.csv")
+      readr::write_csv(as_tibble(res_df), out_ora)
+
+      if (has_enrich) {
+        print(enrichplot::dotplot(ora_h, showCategory = min(15, nrow(res_df))))
+      } else {
+        print(head(res_df, 15))
+      }
+    } else {
+      cat("ORA: 有意な項目が 0 件でした（BH 0.05）。しきい値や gene set・universe の設定を調整してください。\n")
+      # 参考: 名目 p 値ベースの上位表示（プロットは行わない）
+      if (is.data.frame(ora_h@result) && nrow(ora_h@result) > 0) {
+        print(head(ora_h@result, 10))
+      }
+    }
+  } else {
+    cat("閾値に合致する上位遺伝子が少ないため、Hallmark ORA をスキップしました（>=5 必要）。\n")
+  }
+} else {
+  cat("clusterProfiler/msigdbr が無いため、Hallmark ORA をスキップしました。\n")
+}
+```
+
+## 4.2 GO 生物学的過程（`enrichGO`）— **SYMBOL** を使う
+
+```{r}
+if (has_cp && has_anno) {
+  up <- d_all |>
+    filter(!is.na(adj.P.Val)) |>
+    filter(adj.P.Val < 0.05, log2FoldChange > 1) |>
+    pull(SYMBOL) |> unique()
+
+  if (length(up) >= 5) {
+    ego <- clusterProfiler::enrichGO(gene = up,
+                                     universe = universe,
+                                     OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+                                     keyType = "SYMBOL",
+                                     ont = "BP",
+                                     pAdjustMethod = "BH",
+                                     readable = TRUE)
+    res_go <- as.data.frame(ego)
+    if (nrow(res_go) > 0 && has_enrich) {
+      print(enrichplot::dotplot(ego, showCategory = min(15, nrow(res_go))))
+    } else if (nrow(res_go) > 0) {
+      print(head(res_go, 15))
+    } else {
+      cat("GO ORA: 有意な項目が 0 件でした。\n")
+    }
+  } else {
+    cat("閾値に合致する上位遺伝子が少ないため、GO ORA をスキップしました（>=5 必要）。\n")
+  }
+} else {
+  cat("clusterProfiler/org.Hs.eg.db が無いため、GO ORA をスキップしました。\n")
+}
+```
+
+# 5. まとめ
+
+- 本データは **ENSEMBL ID** 起点なので、**SYMBOL での GSEA/ORA に際して ID 変換**を明示的に実施。  
+- **fgsea（Hallmark）** と **ORA（Hallmark/GO）** を **SYMBOL** ベースで実行。  
+- 書き出し：`results/table/06_fgsea_hallmark.csv`, `results/table/06_ora_hallmark.csv`。
+
+# 付録：ID 変換時の注意（重複と未マップ）
+
+```{r}
+if ("SYMBOL" %in% names(dge2)) {
+  # SYMBOL 重複に対しては「中央値」集約で ranks を作成（他に max|mean なども可）
+  dup_count <- sum(duplicated(na.omit(dge2$SYMBOL)))
+  cat("SYMBOL 重複数: ", dup_count, "\n", sep="")
+  unmapped <- dge2 |>
+    filter(is.na(SYMBOL)) |>
+    slice_head(n = 20) |>
+    select(gene, ensembl, log2FoldChange, pvalue, adj.P.Val)
+  if (nrow(unmapped) > 0) {
+    cat("上位20件の未マップ例:\n"); print(unmapped)
+  }
+}
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
