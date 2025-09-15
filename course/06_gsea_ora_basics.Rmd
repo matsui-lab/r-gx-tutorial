@@ -22,7 +22,7 @@ editor: source
 
 # 0. セットアップ
 
-```r
+```{r}
 need <- c("readr","dplyr","fgsea","msigdbr","clusterProfiler","here","ggplot2")
 for (pkg in need) {
   if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
@@ -42,7 +42,7 @@ dir.create(here("results","table"), recursive = TRUE, showWarnings = FALSE)
 
 # 1. pre-ranked GSEA（fgsea）
 
-```r
+```{r}
 # 1) DGE を読み込む（無ければデモに切替）
 use_demo <- FALSE
 in_csv <- here("results","table","05_dge_all.csv")
@@ -107,7 +107,7 @@ print(head(select(fg, pathway, NES, size, padj), 10))
 
 ## 1.1 可視化（代表経路）
 
-```r
+```{r}
 # 例：IFN-γ 応答（存在しない場合は先頭の経路）
 pw <- if ("HALLMARK_INTERFERON_GAMMA_RESPONSE" %in% names(h)) "HALLMARK_INTERFERON_GAMMA_RESPONSE" else names(h)[1]
 plt <- fgsea::plotEnrichment(h[[pw]], ranks) + ggplot2::labs(title = pw)
@@ -122,7 +122,7 @@ plt
 **そのまま動く最小例（Hallmark を ORA する）**  
 GO/KEGGのインターネット依存やID変換を避け、まずは`clusterProfiler::enricher()`で**用語→遺伝子**の表（TERM2GENE）を渡す方法で確実に動かします。
 
-```r
+```{r}
 # Hallmark の TERM2GENEを作成（SYMBOLベース）
 gs2gene <- stack(h) |>
   transmute(gs = ind, gene = values)
@@ -136,7 +136,7 @@ enrichplot::dotplot(ora_h, showCategory = 15)
 ```
 
 > **参考（任意）**：GO を使うクラシックな例（`org.Hs.eg.db`が必要）  
-> ```r
+> ```{r}
 > # library(org.Hs.eg.db)
 > # up  <- dge |>
 > #   filter(padj < 0.05, log2FoldChange > 1) |>

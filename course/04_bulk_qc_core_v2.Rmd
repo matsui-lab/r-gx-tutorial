@@ -1,0 +1,264 @@
+
+---
+title: "Bulk RNA-seq QC 実践ガイド（airway_small 実データ版）"
+author: "matsui-lab"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+editor_options:
+  chunk_output_type: inline
+---
+
+# ねらい
+
+- 擬似データではなく **airway_small（500 genes × 6 samples）** を使い、**最小限の依存関係**で再現可能な **Bulk RNA-seq QC** の核（Core）を通しで実装する。  
+- **オブジェクト整合（SummarizedExperiment）** を保ちながら、**ライブラリサイズ／検出遺伝子数／密度・箱ひげ／相関・PCA／RLE** を一気通貫で確認。  
+- **存在しない列（例: `batch`, `is_mito`）は自動でスキップ**し、手元データに合わせて安全に動くようにする。
+
+# セットアップ
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7, fig.height = 4.5)
+suppressPackageStartupMessages({
+  library(readr); library(dplyr); library(tidyr); library(tibble)
+  library(ggplot2); library(Matrix); library(matrixStats)
+  library(SummarizedExperiment); library(S4Vectors)
+})
+counts_path <- "~/r-gx-tutorial/data/processed/airway_counts_small.csv"
+meta_path   <- "~/r-gx-tutorial/data/processed/airway_meta_small.csv"
+```
+
+# データ読み込みと `SummarizedExperiment` 構築
+
+```{r load-se}
+# Read CSVs
+cts_tbl  <- readr::read_csv(counts_path, show_col_types = FALSE)
+meta_tbl <- readr::read_csv(meta_path,   show_col_types = FALSE)
+
+# counts: gene 列 + SRR… のサンプル列
+feature_col <- if ("gene" %in% names(cts_tbl)) "gene" else tail(names(cts_tbl), 1)
+sample_cols <- setdiff(names(cts_tbl), feature_col)
+
+# colData の整列（counts の列順に）
+stopifnot("sample_id" %in% names(meta_tbl))
+meta_tbl$sample_id <- as.character(meta_tbl$sample_id)
+meta_tbl <- meta_tbl[match(sample_cols, meta_tbl$sample_id), , drop = FALSE]
+
+# counts 行列（base R）
+cts_df <- as.data.frame(cts_tbl, stringsAsFactors = FALSE)
+cts_df <- cts_df[, c(feature_col, sample_cols), drop = FALSE]
+rownames(cts_df) <- cts_df[[feature_col]]
+cts_df[[feature_col]] <- NULL
+cts_mat <- as.matrix(cts_df)
+storage.mode(cts_mat) <- "integer"
+
+# row/col/metadata
+rd <- S4Vectors::DataFrame(gene = rownames(cts_mat))
+meta_tbl$group <- factor(meta_tbl$group, levels = c("control","treatment"))
+cd <- S4Vectors::DataFrame(meta_tbl)
+
+se <- SummarizedExperiment(
+  assays  = list(counts = cts_mat),
+  rowData = rd,
+  colData = cd,
+  metadata = list(source="airway_small", created=Sys.time())
+)
+se
+```
+
+# Count-level QC 指標とプロット
+
+## ライブラリサイズ（総リード数）と検出遺伝子数
+
+```{r libsize-detected}
+libsize  <- colSums(assay(se, "counts"))
+detected <- colSums(assay(se, "counts") > 0)
+qc_tbl <- tibble(sample = colnames(se),
+                 group  = colData(se)$group,
+                 libsize = libsize,
+                 detected = detected) |>
+  arrange(desc(libsize))
+qc_tbl
+
+# bar: library size
+ggplot(qc_tbl, aes(x = sample, y = libsize, fill = group)) +
+  geom_col() + coord_flip() +
+  labs(title = "Library size per sample", x = NULL, y = "reads")
+
+# scatter: libsize vs detected
+ggplot(qc_tbl, aes(x = libsize, y = detected, color = group, label = sample)) +
+  geom_point(size = 3) +
+  ggrepel::geom_text_repel(show.legend = FALSE) +
+  labs(title = "Detected genes vs library size")
+```
+
+## 分布確認：密度・箱ひげ（log2-CPM）
+
+```{r cpm-log}
+lib <- colSums(assay(se, "counts"))
+cpm <- t(t(assay(se, "counts"))/lib * 1e6)
+logcpm <- log2(cpm + 1)
+assay(se, "cpm") <- cpm
+assay(se, "logcpm") <- logcpm
+
+# 密度
+df_d <- as.data.frame(logcpm) |>
+  tibble::rownames_to_column("gene") |>
+  tidyr::pivot_longer(-gene, names_to = "sample", values_to = "logcpm") |>
+  dplyr::left_join(as.data.frame(colData(se))[, c("sample_id","group")],
+                   by = c("sample" = "sample_id"))
+ggplot(df_d, aes(x = logcpm, group = sample, color = group)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of log2-CPM", x = "log2-CPM")
+
+# 箱ひげ
+df_b <- df_d
+ggplot(df_b, aes(x = sample, y = logcpm, fill = group)) +
+  geom_boxplot(outlier.size = 0.4) + coord_flip() +
+  labs(title = "Boxplot of log2-CPM per sample", x = NULL, y = "log2-CPM")
+```
+
+## サンプル間相関・クラスタリング・PCA
+
+```{r cor-heatmap}
+# 相関（Pearson）
+R <- cor(logcpm, method = "pearson")
+
+# pheatmap がない場合のフォールバック
+ok <- requireNamespace("pheatmap", quietly = TRUE)
+if (ok) {
+  ann <- data.frame(group = colData(se)$group)
+  rownames(ann) <- colnames(se)                 # 行名をサンプルIDに
+  # 列順がズレていたら合わせる
+  ann <- ann[colnames(R), , drop = FALSE]
+  pheatmap::pheatmap(R,
+                     annotation_col = ann,
+                     main = "Sample correlation (log2-CPM)")
+} else {
+  heatmap(R, symm = TRUE, scale = "none", main = "Sample correlation (log2-CPM)")
+}
+```
+
+```{r pca}
+# PCA with robust guard: drop zero-variance genes before scaling
+vars <- matrixStats::rowVars(logcpm)
+sel  <- which(vars > 0)
+
+if (length(sel) < 2) {
+  warning("Too few variable genes for scaled PCA; falling back to center-only PCA using all genes (no scaling).")
+  pc <- prcomp(t(logcpm), center = TRUE, scale. = FALSE)
+} else {
+  topn <- min(200, length(sel))  # use up to 200 most variable genes
+  ord  <- order(vars[sel], decreasing = TRUE)[1:topn]
+  X    <- t(logcpm[sel[ord], , drop = FALSE])
+  pc   <- prcomp(X, center = TRUE, scale. = TRUE)
+}
+
+# variance explained (guard for objects without 'importance' matrix size)
+imp <- tryCatch(summary(pc)$importance, error = function(e) NULL)
+if (!is.null(imp) && ncol(imp) >= 2) {
+  var_exp <- imp[2, 1:2]
+  xl <- sprintf("PC1 (%.1f%%)", 100*var_exp[1])
+  yl <- sprintf("PC2 (%.1f%%)", 100*var_exp[2])
+} else {
+  xl <- "PC1"; yl <- "PC2"
+}
+
+plot(pc$x[,1], pc$x[,2],
+     xlab = xl, ylab = yl,
+     col  = as.integer(colData(se)$group)+1, pch = 16,
+     main = "PCA of log2-CPM (variable genes)")
+legend("topright", legend = levels(colData(se)$group),
+       col = seq_along(levels(colData(se)$group))+1, pch = 16, bty = "n")
+```
+
+## RLE（Relative Log Expression）プロット
+
+```{r rle}
+med <- matrixStats::rowMedians(logcpm)
+rle_mat <- sweep(logcpm, 1, med, FUN = "-")
+df_rle <- as.data.frame(rle_mat) |>
+  tibble::rownames_to_column("gene") |>
+  tidyr::pivot_longer(-gene, names_to = "sample", values_to = "rle") |>
+  dplyr::left_join(as.data.frame(colData(se))[, c("sample_id","group")],
+                   by = c("sample" = "sample_id"))
+ggplot(df_rle, aes(x = sample, y = rle, fill = group)) +
+  geom_boxplot(outlier.size = 0.3) + coord_flip() +
+  labs(title = "RLE plot (centered per gene)", x = NULL, y = "Relative log expression")
+```
+
+# 追加指標（データの有無に応じて可変）
+
+```{r optional-qc}
+# ミトコンドリア率（rowData に is_mito がある場合のみ）
+if (!is.null(rowData(se)$is_mito)) {
+  mt_frac <- colSums(assay(se, "counts")[rowData(se)$is_mito, , drop=FALSE]) /
+             colSums(assay(se, "counts"))
+  df_mt <- data.frame(sample = colnames(se), mt_frac = mt_frac,
+                      group = colData(se)$group)
+  ggplot(df_mt, aes(sample, mt_frac, fill = group)) + geom_col() + coord_flip() +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    labs(title = "Mitochondrial fraction (if available)", x = NULL, y = "fraction")
+} else {
+  message("rowData(se)$is_mito not found; skipping mitochondrial fraction plot.")
+}
+
+# batch 可視化（colData に batch がある場合のみ）
+if (!is.null(colData(se)$batch)) {
+  plot(pc$x[,1], pc$x[,2],
+       xlab = sprintf("PC1 (%.1f%%)", 100*var_exp[1]),
+       ylab = sprintf("PC2 (%.1f%%)", 100*var_exp[2]),
+       col  = as.integer(colData(se)$group)+1,
+       pch  = ifelse(colData(se)$batch == levels(colData(se)$batch)[1], 16, 17),
+       main = "PCA: color=group, shape=batch")
+  legend("topright",
+         legend = paste("batch:", levels(colData(se)$batch)),
+         pch = c(16,17), bty = "n")
+} else {
+  message("colData(se)$batch not found; skipping batch visualization.")
+}
+```
+
+# QC サマリー・フラグ例
+
+```{r qc-flags}
+qc <- tibble(
+  sample   = colnames(se),
+  group    = colData(se)$group,
+  libsize  = colSums(assay(se, "counts")),
+  detected = colSums(assay(se, "counts") > 0),
+  zeros_pct = colMeans(assay(se, "counts") == 0)
+)
+# しきい値（例）：小規模デモ用
+thr_lib_low <- quantile(qc$libsize, 0.10)
+thr_det_low <- quantile(qc$detected, 0.10)
+thr_zero_hi <- quantile(qc$zeros_pct, 0.90)
+
+qc <- qc |>
+  mutate(flag_low_lib  = libsize  < thr_lib_low,
+         flag_low_det  = detected < thr_det_low,
+         flag_hi_zeros = zeros_pct > thr_zero_hi)
+
+qc
+```
+
+# 保存
+
+```{r save}
+out_rds <- "~/r-gx-tutorial/data/processed/airway_se_small.rds"
+saveRDS(se, out_rds)
+out_rds
+```
+
+# Session info
+
+```{r session}
+sessionInfo()
+```
