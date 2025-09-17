@@ -1,0 +1,749 @@
+---
+title: "QCスキル：品質を見極めて適切に処理を施す"
+author: "matsui-lab / R omics演習"
+output:
+html_document:
+toc: true
+toc_float: true
+number_sections: true
+df_print: paged
+---
+
+> **ねらい**: Bioconductorの `airway` RNA-seq データで差分解析の基本〜応用を一気通貫で実装し、**遺伝子発現以外（プロテオーム、メタボローム、メチローム等）にも一般化できる考え方・枠組み**を整理する。
+
+# 0. セットアップ
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
+set.seed(42)
+```
+
+## 必要パッケージの確認と（必要なら）導入
+
+```{r pkgs,eval=FALSE}
+## ---- パッケージ：不足分のみ導入 -------------------------------------------
+# Bioconductor側
+bioc_pkgs <- c(
+  "SummarizedExperiment","DESeq2","airway","limma","edgeR",
+  "sva","GSVA","AnnotationDbi","org.Hs.eg.db","apeglm"
+)
+# CRAN側
+cran_pkgs <- c(
+  "ggplot2","pheatmap","patchwork","tibble","dplyr","stringr",
+  "matrixStats","ggrepel","msigdbr"
+)
+
+need <- unique(c(bioc_pkgs, cran_pkgs))
+missing <- need[!suppressWarnings(sapply(need, requireNamespace, quietly = TRUE))]
+
+if (length(missing) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  bioc_missing <- intersect(bioc_pkgs, missing)
+  cran_missing <- intersect(cran_pkgs, missing)
+  if (length(bioc_missing) > 0) BiocManager::install(bioc_missing, ask = FALSE, update = FALSE)
+  if (length(cran_missing) > 0) install.packages(cran_missing)
+}
+
+## ---- 読み込み（Startupメッセージ抑制） ------------------------------------
+suppressPackageStartupMessages({
+  library(SummarizedExperiment); library(DESeq2); library(limma); library(edgeR)
+  library(airway); library(sva); library(GSVA); library(AnnotationDbi); library(org.Hs.eg.db); library(apeglm)
+  library(ggplot2); library(pheatmap); library(patchwork); library(tibble); library(dplyr); library(stringr)
+  library(matrixStats); library(ggrepel); library(msigdbr)
+})
+
+## ---- ggplot2 のデフォルトテーマ -------------------------------------------
+theme_set(ggplot2::theme_bw(base_size = 12))
+```
+
+# 1. コンセプト：オミクス横断の変動（差分）解析ワークフロー
+
+-   **目標**: 条件A vs 条件Bの\*\*平均の違い（効果量）\*\*を、ノイズやバッチの影響を抑えつつ、\*\*多数の特徴量（遺伝子/タンパク/代謝物/ピーク/部位）\*\*に対して検出する。
+
+-   **抽象モデル**：
+
+    -   カウント系: $\text{counts}\times{gi} \sim \text{NB}(\mu\times{g_i}, \alpha_g)$、$\log \mu_{gi} = \log s_i + X_i^\top\beta_g$（`DESeq2`/`edgeR`）
+    -   連続量系: $$y_{gi} = X_i^\top\beta_g + \varepsilon_{gi}$$、$\operatorname{Var}(\varepsilon_{gi})$は平均依存→`voom`で重み化し`limma`の経験ベイズで分散を**安定化**。
+
+-   **論点（どのオミクスでも共通）**:
+
+    1.  **QC/前処理**（欠損・外れ値・低発現除去・正規化）
+    2.  **設計行列**（交絡の明示、ブロック/繰返しの扱い）
+    3.  **尤度/分散モデル**の選択（NB vs 正規）と**分散の借用（moderation）**
+    4.  **多重検定**（FDR制御）と**効果量の縮約**（小標本の過大評価抑制）
+    5.  **生物学的解釈**（経路/集合の単位に持ち上げる）
+
+```{r, message=FALSE,echo=FALSE}
+suppressPackageStartupMessages(library(DiagrammeR))
+DiagrammeR::mermaid(
+  "graph TB\n  A[原データ: カウント/強度] --> B[QC: 欠損/外れ/低発現]\n  B --> C[正規化: サイズ因子/TMM/分位数]\n  C --> D[設計: ~ ブロック + 主要効果 + 交互作用]\n  D --> E1[NB-GLM (DESeq2/edgeR)]\n  D --> E2[voom + limma (連続/強度)]\n  E1 --> F[効果量縮約 + FDR]\n  E2 --> F\n  F --> G[解釈: MA/Volcano/PCA/ヒートマップ]\n  G --> H[集合解析: GSVA/fgsea]\n  style A fill:#f3f7ff,stroke:#6a8,stroke-width:1px;\n  style H fill:#fff7f3,stroke:#a86,stroke-width:1px;"
+)
+```
+
+# 2. データ読み込みとメタデータ整備（Airway）
+
+```{r load,eval=FALSE}
+data("airway")
+se <- airway
+colData(se)$dex <- relevel(factor(colData(se)$dex), ref = "untrt")
+colData(se)$cell <- factor(colData(se)$cell)  # ブロック（同一細胞株の対）
+se
+```
+
+**設計の考え方**: このデータは各細胞株で `untrt` と `trt` をペアで測定 → **ペアデザイン**。差分解析では `~ cell + dex` として**ブロック（cell）を共変量で吸収**し、`dex` の主効果を推定するのが定石。
+
+# 3. QCと前処理 --- 原理・チェックリスト
+
+本節では **「何を、なぜ、どこで」** チェック・制御・処理するのかを、オミクス横断の原理としてまとめ、そのうえで例として **シークエンシング（RNA-seq想定）** と **質量分析（プロテオーム/メタボローム）** の要点に落とし込む。実務では"装置→測定→前処理→統計"の各層で **系統誤差（bias）** と **偶然誤差（variance）** を切り分け、**シグナル保存** と **ノイズ抑制** のトレードオフを常に意識する。
+
+## 3.1 QCの設計思想（共通の5原則）
+
+1.  **予防が最良のQC**：実験計画・ランダム化・ブロッキング・QCサンプル/スパイクインの設計で、統計補正に頼りすぎない。
+
+2.  **層で考える**：$サンプル層（採取/処理）→ 計測層（装置/ラン）→ データ層（行列の欠損・外れ）→ 推定層（モデル/分散）$ のどこに問題があるかを同定。
+
+3.  **外部基準＋内部整合**：外部基準（iRT/標準品/スパイクイン/遺伝子体カバレッジ等）と、内部整合（反復・相関・ペア一致）を併用。
+
+4.  **ルールを先に決める**：フィルタ閾値・外れ値規則・バッチ補正の要否は、解析前にドキュメント化（"研究計画に準拠"）。
+
+5.  **リークを避ける**：差分検定の目的変数に触れる操作（例：群ラベルを使った過学習的なノーマライズ/除外）は厳禁。
+
+| 原則                                  | 狙い                                   | 代表的な定量指標                                                                                            |
+|-----------------|-----------------|---------------------------------------|
+| **P1. 同定・整合性（ID/メタデータ）** | サンプル取り違え・属性不一致の早期検知 | メタデータ整合率、性別推定一致、重複/近縁性（IBD/IBS）、バーコード衝突率                                    |
+| **P2. 信号品質・S/N**                 | 技術ノイズ・低品質測定の除外           | Qスコア分布・%Q30、マッピング率、重複率、欠損率、TSS/FRiP、TIC安定性、質量誤差ppm                           |
+| **P3. 系統バイアス・汚染**            | バッチ・ドリフト・外来汚染の検知/補正  | バッチ寄与（R²/ANOVA）、ドリフト指標（QC列のRT/強度トレンド）、decontam率、交差汚染推定                     |
+| **P4. 正規化・較正**                  | 機器/ロット差のスケール調整            | 内部標準比、QCベースLOESS、ライブラリサイズ補正、VSN/量子化、Noob/FunNorm                                   |
+| **P5. 再現性・妥当性/外れ値**         | QCリピートの再現・生物学的妥当性確認   | QCサンプルCV（%CV）、相関（Pearson/Spearman）、既知ポジコン回収率、クラスタ安定度、外れ値指標（RLE/NUSE等） |
+
+> 以降の各表では項目末尾に **[P#]** で該当原則を付記。
+
+## 3.1a シークエンシング系：**コアスキル**
+
+### 総論（本質）
+配列読取りは「分子の**離散サンプリング**（counts）」であり、読取り数の総量差（**ライブラリサイズ・構成バイアス**）、断片化と配列特性に由来する**位置・塩基依存バイアス**、割当ての**不確実性**（多重割当・救済割当）を必然的に生む。したがって、**盲目的（blind）に**(i)身元整合、(ii)信号健全性、(iii)系統偏り、(iv)総量/分布整合、(v)再現性、の順で**可視化→最小補正→共通尺度化**し、解析用アーティファクトを**凍結**して引き渡すのが核となる。
+
+### 5つのコアスキル（工程別）
+
+#### P1. 同定・整合性：身元と設計の一致を保証する
+　目的：サンプルとメタ情報の一致を担保（*sample swap*, *index hopping*, *strandedness*）。  
+　手段：ラベル監査・性別/既知マーカー・（あれば）SNP照合、配列方向の推定と記録。
+
+#### P2. FASTQ：読取りの健全性を保証する
+　目的：測定が統計的に扱える品質かを担保（**Qスコア、アダプタ、過増幅/重複、汚染**）。  
+　手段：品質監査と最小トリミング・重複処理（UMI ありなら誤り訂正付き**重複除去**）。
+
+#### P3. MAP/COUNT：割当ての不確実性を制御し、集計規則を固定する
+　目的：断片→参照対応の曖昧さと集計由来の偏りを統制（**多重マップ、救済（EM）割当、ストランド、遺伝子体カバレッジ、集計単位**）。  
+　手段：割当方針（ユニーク/EM）、外れ長さ・低品質の除外、**注釈/参照版の固定**、集計規約（遺伝子vs転写産物、曖昧リード・重複・アンチセンス、長さ補正）の**事前規約化**。
+
+#### P4. SCALE：離散サンプリングの歪みを最小化する
+　目的：**総量差（library size）と構成依存**、および**平均–分散依存**を解消。  
+　手段：**サイズ係数**で総量を合わせ（RLE/TMM/UpperQ）、続けて**分散安定化**（VST/rlog/voom）。**TPM/RPKMは記述用**で、群差推定には用いない。
+
+#### P5. REPRO：再現性と外れを管理する
+　目的：技術再現の確証と外れの方針決定（**QC相関・RLE/MA・Cook’s距離**）。
+　手段：合否基準をSOP化し、**blindに合否→凍結**（counts＋メタ＋QCレポ）を下流へ引き渡す。
+
+
+| P             | 主たる工程                     | 核となる問い                                                      | 代表指標（例）                            | 推奨処置（最小）                                                         | Rパッケージ／関数（例）                                                                                                                                                                                             |                                                                                                                                   |
+| ------------- | ------------------------- | ----------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **P1 同定・整合性** | **FASTQ / デマルチ**＋初期アライン設定 | サンプルと設計情報は整合しているか（sample swap / index hopping / strandness） | ラベル整合、性別・既知マーカー照合、配列方向             | 照合・監査を先行、方向/参照/注釈の版を固定して記録                                       | `SummarizedExperiment::colData`／`dplyr`（設計確認）<br>RSeQC **`infer_experiment.py`**（外部；方向性）<br>`SNPRelate::snpgdsIBD`（遺伝的照合がある場合）                                                                           |                                                                                                                                   |
+| **P2 信号品質**   | **FASTQ → MAP**           | 読取りは統計的に扱える品質か（Q30／アダプタ／重複／被覆／位置決め）                         | %Q30、アダプタ残存、重複率、マップ率、遺伝子体被覆（5′/3′） | 最小トリム、UMI誤り訂正＋重複除去、極端断片の除外、再調製判断                                 | `ShortRead::qa`／`Rqc`（FASTQ品質）<br>**`fastp`／`cutadapt`**（外部；トリム）<br>**Picard**（外部；重複）<br>`Rsamtools::idxstatsBam`（配置統計）<br>RSeQC **`geneBody_coverage.py`**（外部；被覆）<br>`Rsubread::featureCounts`（rRNA率など） |                                                                                                                                   |
+| **P3 系統的偏り**  | **MAP / COUNT**           | 設計要因や集計規約・救済割当（EM/rescue）による**構成バイアス**はないか                  | PCAのバッチ分離、PC1–ライブラリ規模相関、救済割当の影響    | ランダム化設計、サイズ係数の適用（RLE/TMM）→必要最小限のバッチ補正（ComBat/RUV）                | `edgeR::cpm`／`edgeR::calcNormFactors("TMM")`<br>`DESeq2::estimateSizeFactors`<br>`stats::prcomp`＋`ggplot2`（PCA）<br>`sva::ComBat`、`RUVSeq::RUVg/RUVs`<br>`limma::removeBatchEffect`                       |                                                                                                                                   |
+| **P4 正規化・較正** | **SCALE**                 | 離散カウント特有の**総量差**と**平均–分散依存**をどう整えるか                         | RLE中央値≈0、MAのA依存の緩和、PCに規模が乗らない      | **サイズ係数**（RLE/TMM/UpperQ）→**分散安定化**（VST/rlog/voom）※blind／TPMは記述用 | `DESeq2::estimateSizeFactors`（RLE）<br>\`edgeR::calcNormFactors("TMM" "upperquartile")`<br>`DESeq2::vst`／`DESeq2::rlog`<br>`limma::voom`（重み付け）<br>`matrixStats::rowMedians`（RLE計算）<br>`DESeq2::plotMA\` |
+| **P5 再現性・外れ** | **REPRO（引き渡し前）**          | 技術再現と外れの扱いをどう確証するか                                          | サンプル間相関・距離、QC%CV、Cook’s距離、既知陽性回収   | 合否SOPで判定・記録、外れの方針（除外/別扱い）を適用→**アーティファクト凍結**                      | `DESeq2::plotPCA`、`pheatmap::pheatmap`（距離）<br>`DESeq2::plotMA`（俯瞰）<br>`assays(dds)[["cooks"]]`（Cook’s）<br>`stats::cor`／`ggplot2`（相関可視化）                                                                  |                              
+> **ワークフローの例**：QC（P1–P3）→ 正規化/安定化（P4；blind）→ 再確認（P2–P4）→ 再現性確認（P5）→ **引き渡し**（解析用アーティファクト凍結）。
+
+## 3.1b 質量分析系：**コアスキル**
+
+### 総論（本質）
+
+質量分析は「**連続強度のサンプリング**（イオン強度）」であり、**電離効率**（matrix effect）・**分離時間の揺らぎ**（保持時間ドリフト, RT drift）・**質量校正誤差**（ppm error）・**測定順の劣化**（run-order drift）・**同定の確率性**（DDA）や**ライブラリ依存性**（DIA）・**チャネル比の縮小**（ratio compression, TMT）・**欠測の機構**（MNAR/MAR）を必然的に伴う。したがって、**盲目的（blind）に** (i)身元整合、(ii)信号健全性、(iii)系統偏り、(iv)総量/分布整合、(v)再現性、の順で**可視化→最小補正→共通尺度化**し、解析用アーティファクトを**凍結**して引き渡すのが核となる。
+
+### 5つのコアスキル（工程別）
+
+#### P1. 同定・整合性：ラベル／標準／参照の一致を保証する
+
+目的：サンプルと設計情報の整合（**チャネル割付, internal standard, reference channel/iRT**）。
+手段：割付表・参照比・内部標準の回収率を照合し、設計と実測を一致させる（ログに版情報を記録）。
+
+#### P2. RAW/CHROM：信号の健全性を保証する
+
+目的：測定が統計的に扱える品質か（**TIC安定性, RTドリフト, 質量精度(ppm), ID率, ピーク形状**）。
+手段：**QC混合物をラン全体に挿入**して時系列モニタ、必要に応じ**再校正**・**カラム/ソース**の整備・パラメータ最適化。
+
+#### P3. ALIGN/ID/QUANT：系統的偏りと汚染を抑制する
+
+目的：**測定順ドリフト・キャリーオーバー・バッチ差**、およびアライン/同定/定量の規則由来の歪みを統制。
+手段：**QC基盤の時系列補正（QC-RLSC）**、**ブランク監視**、**ランダム化配置**、残差バッチ補正（ComBat等）、ライブラリ/同定閾値の事前規約化。
+
+#### P4. SCALE/NORM：スケールと分布を整える
+
+目的：**注入量・電離差によるスケール不一致**と**分布形状差／比圧縮**を調整。
+手段：内部標準/参照チャネル・**PQN**・**分位合わせ/VSN**・**log/glog**でスケールと形状を統一（**TMTは参照チャネル基準**で比を安定化）。TIC一律は**組成変動に弱い**ため慎重に。
+
+#### P5. REPRO：再現性と外れ・欠測を管理する
+
+目的：技術再現の確証と外れの扱い、**欠測機構（MNAR/MAR）**に応じた補完。
+手段：QC反復の**%CV**・相関・既知スパイク回収で合否判定、**左側代入（MinProb/QRILC）**や**kNN**など機構別補完を適用し、アーティファクトを**凍結**して下流へ。
+
+---
+
+### 質量分析系コアスキル（P1–P5対応＋Rパッケージ）
+
+| P             | 主たる工程               | 核となる問い                            | 代表指標（例）                      | 推奨処置（最小）                                               | Rパッケージ／関数（例）                                                                                                    |
+| ------------- | ------------------- | --------------------------------- | ---------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| **P1 同定・整合性** | **RAW/設計**＋ラベル/標準確認 | サンプル設計は整合しているか（TMT割付・内部標準・参照/iRT） | 参照比の逸脱、内部標準回収、iRT整合          | 割付表照合、参照/内標の回収監査、設計ログ固定                                | `MSstatsTMT`（設計/集約）／`QFeatures`（メタ連結）／**PTXQC**（外部；MaxQuantログ）                                                  |
+| **P2 信号品質**   | **RAW/CHROM**       | 測定は健全か（TIC/RT/ppm/ID率/ピーク形状）      | TIC安定、RTシフト、質量誤差、ID数、ピーク幅    | QC列による時系列監視、再校正・ソース/カラム整備、パラメータ最適化                     | `MSstatsQC2`（時系列QC），`Spectra`/`mzR`（TIC, ppm），`xcms`（クロマト処理），`IPO`（パラメタ最適化）                                     |
+| **P3 系統的偏り**  | **ALIGN/ID/QUANT**  | ドリフト・キャリー・バッチ差はないか                | QCトレンド、blankピーク、PCAでバッチ分離    | **QC-RLSC**で時系列補正、ブランク監視、残差バッチ補正（ComBat/proBatch）      | `statTarget::shiftCor`（QC-RLSC），`proBatch`，`sva::ComBat`，`ggplot2`＋`stats::prcomp`（PCA）                         |
+| **P4 正規化・較正** | **SCALE/NORM**      | スケール不一致・分布差・比圧縮をどう整えるか            | 分位プロファイル、VSN適合、チャネル比の安定      | 内標/参照・**PQN**・**quantile**・**VSN**・log/glog（TMTは参照基準）  | `NormalizeMets::pqnorm`，`limma::normalizeBetweenArrays`（quantile），`vsn::vsn2`，`MSstatsTMT::dataProcess`（TMT比補正） |
+| **P5 再現性・外れ** | **REPRO/引き渡し**      | 技術再現と欠測の扱いは妥当か                    | QC%CV、rep相関、欠測パターン（MNAR/MAR） | 合否SOPで判定、**左側代入（MinProb/QRILC）／kNN**など機構別補完、アーティファクト凍結 | `MSstats`（QC評価/要約），`DEP`（可視化・前処理），`imputeLCMD::impQRILC/MinDet`，`DMwR::knnImputation`（代替）                       |
+
+> **ワークフロー例**：ピーク検出/整列 → **QC時系列補正（P3）** → **スケール/分布補正（P4；blind）** → 再確認（P2–P4） → **再現性確認（P5）** → **引き渡し（アーティファクト凍結）**。
+> **DDA と DIA**：DDA は取得の確率性・欠測（MNAR）に配慮、DIA はライブラリ品質・整列（`DIAlignR`）の妥当性が鍵。
+> **TMT/iTRAQ**：参照チャネル基準で比を安定化し、比圧縮に注意（`MSstatsTMT`）。**LFQ**：分位/VSNと外れ頑健な集約（`MSstats`）。**メタボロミクス**：**QC-RLSC→PQN/内標→log/glog**が定石。
+
+
+## 3.2 共通チェックリスト
+
+-   **サンプル識別**：ラベル取り違え/重複。遺伝的指紋（SNP）や性染色体マーカー、メタデータ整合で検出。
+
+-   **量の健全性**：総シグナル（ライブラリサイズ/TIC）、非欠損率、上位特徴への偏り（トップ100比率）。
+
+-   **技術一貫性**：QCリプリケートのCV、バッチ/ラン間のドリフト（RT/質量精度/GC含量/3'バイアス）。
+
+-   **構造的交絡**：群とバッチ・施設・日付が完全交絡していないか（→推定不能）。
+
+-   **外れ値**：PCA/距離ヒートマップ/ロバスト指標（MAD）で検出、**原因特定→処置**（やむを得ない場合のみ除外）。
+
+#  各論
+## RNA-seqの場合
+
+| 段階        | 原理（なぜ）                   | データ現象                               | 検出・管理の要点                       |
+|----------------|----------------|---------------------|--------------------|
+| P1 同定     | 取り違え・混線                 | 属性と不一致、近縁性の破綻               | 生物学的指標で照合、読み取り方向の推定 |
+| P2 信号     | 読み取り誤差・重複・端への偏り | 低品質・不要断片・位置決め不良・被覆偏り | 品質・被覆・重複・不要断片の監査と是正 |
+| P3 かたより | 設計要因差・構成バイアス       | バッチ集団化、全体量が主因               | 量合わせ→残差的な設計要因の補正        |
+| P4 正規化   | 全体量差・平均--分散依存       | スケール不一致、MAの歪み                 | 基準比でのスケール合わせ＋分散安定化   |
+| P5 再現     | 劣化・希少事象                 | 繰り返し不一致、外れ                     | 相関・ばらつき・対照回収で合否判断     |
+
+### P1 同定・整合性
+
+-   **原理**：試料の取り違えや多重化バーコードの混線が起こりうる（用語：**sample swap**, **index hopping**, **ストランド性**）。
+
+-   **データ現象**：生物学的属性とメタ情報が不一致／近縁な試料同士の距離が不自然（例：**XIST**, **RPS4Y1** の不一致、IBS/IBDの異常）。
+
+-   **検出・管理**：性別・既知マーカー・遺伝的指標の照合、配列方向の推定を初期に行う（**sex-check**, **SNPRelate**, **infer_experiment**）。
+
+### P2 信号品質
+
+-   **原理**：読み取り誤差・PCR重複・不要断片・増幅効率の差・端への偏りが生じる（**Qスコア**, **PCR duplicates**, **adapter contamination**, **GC bias**, **5′/3′ bias**）。
+
+-   **データ現象**：%Q30低下、アダプタ残存、位置決め率低下、遺伝子体被覆の片寄り、重複率上昇、rRNA比高値（**mapping rate**, **gene body coverage**, **duplication rate**, **rRNA mapping**）。
+
+-   **検出・管理**：品質監査→必要なトリミング・重複処理・再調製（**FastQC/fastp**, **Picard**, **RSeQC**, **UMI dedup**）。
+
+### P3 系統的偏り・汚染
+
+-   **原理**：測定日・試薬・機器差などの設計要因と、相対量の歪み（**batch effect**, **compositional bias**）。
+
+-   **データ現象**：PCAが群ではなくバッチで分離、第一主成分とライブラリ量が強相関（**PC1--library size correlation**）。
+
+-   **検出・管理**：実験計画での分散配置＋**サイズ係数**での構成補正→必要なら統計的補正（**RLE**, **TMM**, **ComBat**, **RUVg/RUVs**）。
+
+### P4 正規化・較正
+
+-   **原理**：総量差と平均--分散依存が推定を歪める（**library size difference**, **mean--variance relationship**）。
+
+-   **データ現象**：スケール不一致、MA依存の歪み、RLE中央値の逸脱（**MA plot**, **RLE**）。
+
+-   **検出・管理**：基準比にもとづくスケーリング＋分散安定化（**median-of-ratios (RLE)**, **TMM**, **upper-quartile**, **VST/rlog**, **voom**）。
+
+### P5 再現性・外れ値
+
+-   **原理**：劣化・操作差・希少事象が技術ばらつきを増やす（**technical variability**, **degradation**）。
+
+-   **データ現象**：繰り返しの相関低下、外れ値点、既知陽性の未回収（**Cook's distance**, **distance heatmap**）。
+
+-   **検出・管理**：相関・CV・外れ値診断で合否判定し、原因に応じて除外／再測定／ロバスト化（**QC replicate**, **positive controls**）。
+
+# どのように実装するか（RNA-seqの実装例）
+
+## この演習で身につけるRのコア操作（QC／前処理）
+
+### 到達目標（3つ）
+
+1. **QCの可視化と基礎統計**：サンプル単位の要約（総量・非欠損・集中度）と、低次元表示（PCA）で**品質と偏り**を診断できる。
+2. **前処理の最短手順**：**低カウント除去 → サイズ係数 → 分散安定化**を正しく実装・検証できる（blind）。
+3. **再現性の確認と引き渡し**：PCA／距離／外れ指標で合否を判定し、**解析用アーティファクト**（行列・メタ・QC図）として凍結できる。
+
+---
+
+### QC（P1・P2・P3・P5）— コアスキル早見
+
+| P             | 何を確かめる（目的）              | Rで何をする（操作）                                    | 主な関数・パッケージ（例）                                                        |
+| ------------- | ----------------------- | --------------------------------------------- | -------------------------------------------------------------------- |
+| **P1 同定・整合性** | サンプルIDと設計（群・ブロック）の整合    | 列名の一意性・設計表のクロス集計                              | `duplicated()`、`SummarizedExperiment::colData`、`table()`             |
+| **P2 信号品質**   | 総量・非欠損・上位集中（明白な不良の検出）   | `qc_sample_summary()`で要約列を作成し可視化              | `colSums()`／`colMeans()`、自作`qc_sample_summary()`、`ggplot2`、`ggrepel` |
+| **P3 系統的偏り**  | 規模やバッチが主なばらつき要因になっていないか | `edgeR::cpm(log=TRUE)`→`prcomp()`→PC1とログ総量の相関 | `edgeR::cpm`、`stats::prcomp`、`cor()`、`ggplot2`                       |
+| **P5 再現性・外れ** | 群内一貫性・外れの有無             | VST後のPCA／サンプル距離ヒートマップ／Cook’s距離の概観             | `DESeq2::plotPCA`、`pheatmap::pheatmap`、`assays(dds)[["cooks"]]`      |
+
+> 参考（FASTQ段階のQC）：実データでは **FastQC / fastp / RSeQC** で Q30・アダプタ・ストランド・gene body coverage を併用（Airway例では省略）。
+
+---
+
+### 前処理（P4中心）— コアスキル早見
+
+| ステップ        | 目的                      | Rで何をする（操作）            | 主な関数・パッケージ（例）                                                      |
+| ----------- | ----------------------- | --------------------- | ------------------------------------------------------------------ |
+| **低カウント除去** | 検出力の低い特徴を除き誤検出を抑制       | デザインを踏まえてフィルタ         | `edgeR::filterByExpr`                                              |
+| **サイズ係数**   | 総量差（ライブラリサイズ・構成差）を補正    | RLEのサイズ係数を推定          | `DESeq2::estimateSizeFactors`（代替：`edgeR::calcNormFactors`）         |
+| **分散安定化**   | 平均–分散依存を緩和し可視化・距離計算を安定化 | VST（blind）を適用         | `DESeq2::vst`（代替：`limma::voom`）                                    |
+| **妥当性確認**   | 正規化の効きすぎ／足りなさを点検        | RLE箱ひげ（中央値≈0）、PCA、距離図 | `matrixStats::rowMedians`＋`boxplot()`、`DESeq2::plotPCA`、`pheatmap` |
+| **引き渡し**    | 解析用アーティファクトの凍結          | 行列・メタ・QC図を保存          | `saveRDS()`、`readr::write_csv()`                                   |
+
+> 任意：バッチ補正は**正規化後**に必要最小限（`sva::ComBat` など）。DE（差分解析）の設計式は**QC/前処理の後段**で初めて投入する。
+
+---
+
+### 最小コマンド列（この順で実行できればOK）
+
+```r
+# P2: QC要約
+qc_df <- qc_sample_summary(cts)
+
+# P3: 偏りの事前診断
+logCPM <- edgeR::cpm(cts, log=TRUE, prior.count=1)
+pc_df  <- prcomp(t(logCPM))$x[,1:2]
+
+# P4: 前処理（低カウント→サイズ係数→VST）
+keep <- edgeR::filterByExpr(DGEList(cts), group = colData(se)$dex)
+dds  <- DESeq2::DESeqDataSet(se[keep,], design = ~ cell + dex) |> DESeq2::estimateSizeFactors()
+vsd  <- DESeq2::vst(dds, blind = TRUE)
+
+# P4: 妥当性（RLE中央値≈0）
+rle_mat <- SummarizedExperiment::assay(vsd) - matrixStats::rowMedians(SummarizedExperiment::assay(vsd))
+boxplot(as.data.frame(rle_mat), outline=FALSE, las=2)
+
+# P5: 再現性（PCA／距離）
+DESeq2::plotPCA(vsd, intgroup=c("dex","cell"))
+dist_mat <- dist(t(SummarizedExperiment::assay(vsd))); pheatmap::pheatmap(as.matrix(dist_mat))
+```
+
+
+### 準備
+``` r
+# 補助: サンプル単位QCの簡易要約
+qc_sample_summary <- function(counts_mat, topN = 100) {
+  stopifnot(is.matrix(counts_mat))
+  tibble(
+    sample       = colnames(counts_mat),
+    libsize      = colSums(counts_mat),
+    nonzero_frac = colMeans(counts_mat > 0),
+    topN_frac    = apply(counts_mat, 2, function(x){
+      x <- x[x > 0]; if(length(x)==0) return(NA_real_)
+      s <- sort(x, decreasing = TRUE); sum(head(s, topN))/sum(s)
+    })
+  )
+}
+`%||%` <- function(a,b) if (!is.null(a)) a else b
+
+# データ読込（Airway）
+data("airway")
+se <- airway
+colData(se)$dex  <- relevel(factor(colData(se)$dex), "untrt")  # 処理: untrt(基準), trt
+colData(se)$cell <- factor(colData(se)$cell)
+cts <- SummarizedExperiment::assay(se) |> as.matrix()
+```
+
+### P1 同定・整合性（ID/メタデータの照合）
+
+**問題**：サンプルの取り違え・ラベル不整合があると以降の解析が破綻する。
+
+**目的**：設計情報（群・ブロック）がデータと整合しているかを**最初に**確認する。
+
+**ワークフロー**：
+
+1.  サンプルIDの重複/欠落チェック → 2) 群×ブロックのバランス確認 → 3)（可能なら）生物指標での照合。 **手法**：設計表のクロス集計、基本統計（生物指標があれば性別/指標照合）。
+2.  **使用パッケージ・関数**：`SummarizedExperiment::colData`、`table`、`duplicated`。
+
+``` r
+# --- P1: 同定・整合性 ------------------------------------------------------
+# サンプルIDの一意性
+stopifnot(!any(duplicated(colnames(se))))
+
+# 設計の確認：群×ブロック（cell × dex）
+design_df <- as.data.frame(colData(se))[, c("sample","run","cell","dex")]
+print(design_df)
+print(with(design_df, table(cell, dex)))
+```
+
+### P2 信号品質（測定の健全性：S/N・偏り）
+
+**問題**：読み取りの質や不要断片、増幅の偏りが高いと、下流の差分解析に**系統的な歪み**が入る。
+
+**目的**：サンプルごとの「総量」「非欠損」「上位特徴への集中」「（参考）ミトコンドリア比」を把握し、**明らかな不良**を検出する。
+
+**ワークフロー**：
+
+1)  サンプル別の総量・非欠損率・トップ集中を算出 → 2) 参考指標（ミト比など） → 3) 可視化で外れ・偏りを見る。
+
+**手法**：ライブラリサイズ、非ゼロ率、上位寄与率（TopN fraction）。
+
+**使用パッケージ・関数**：`qc_sample_summary`（自作）、`ggplot2`、`ggrepel::geom_text_repel`。
+
+``` r
+# --- P2: 信号品質 ----------------------------------------------------------
+qc_df <- qc_sample_summary(cts) %>%
+  left_join(as.data.frame(colData(se)) %>% tibble::rownames_to_column("sample"),
+            by = "sample")
+
+# 参考: ミトコンドリア遺伝子比（Airwayにはgene symbolが無いことが多いのでNA対策）
+sym <- rowData(se)$symbol %||% rowData(se)$gene_name %||% rep(NA_character_, nrow(se))
+mt_rows <- if (all(is.na(sym))) rep(FALSE, nrow(se)) else grepl("^MT-", sym)
+qc_df$mito_frac <- if (any(mt_rows)) colSums(cts[mt_rows,,drop=FALSE]) / qc_df$libsize else NA_real_
+
+# 可視化1: ライブラリサイズ
+ggplot(qc_df, aes(x = reorder(sample, libsize), y = libsize/1e6, fill = dex)) +
+  geom_col() + coord_flip() +
+  labs(x=NULL, y="Library size (million reads)", title="ライブラリサイズ（サンプル別）")
+
+# 可視化2: 非欠損 × 上位集中
+ggplot(qc_df, aes(nonzero_frac, topN_frac, color = dex, shape = cell, label = sample)) +
+  geom_point(size=3) +
+  ggrepel::geom_text_repel(show.legend = FALSE, max.overlaps = 20) +
+  labs(x="非ゼロ比率", y="上位100遺伝子の寄与（Top100 fraction）",
+       title="信号の密度と上位遺伝子への集中")
+
+# 可視化3: （あれば）ミトコンドリア比
+if (!all(is.na(qc_df$mito_frac))) {
+  ggplot(qc_df, aes(x = dex, y = mito_frac, fill = dex)) +
+    geom_boxplot(width=.6, alpha=.7) + geom_jitter(width=.1, height=0, size=2) +
+    labs(x=NULL, y="ミトコンドリア比", title="ミトコンドリア由来リードの割合（参考）")
+}
+```
+
+### P3 系統的偏り（設計要因・構成バイアス）
+
+**問題**：測定日や装置などの設計要因、または総量差に伴う**相対量の歪み**が、主なばらつき要因になると、生物学的差異が埋もれる。
+
+**目的**：主要成分（PCA）で「群」ではなく「バッチ/規模」が支配していないかを**事前診断**する。
+
+**ワークフロー**：
+
+1.  粗い正規化（logCPM）→ 2) PCA で低次元表示 → 3) PC1 と総量の相関を評価。
+
+**手法**：logCPM、PCA、PC1--library size 相関。
+
+**使用パッケージ・関数**：`edgeR::cpm`、`stats::prcomp`、`ggplot2`。
+
+``` r
+# --- P3: 系統的偏りの兆候 ---------------------------------------------------
+logCPM <- edgeR::cpm(cts, log=TRUE, prior.count = 1)
+pca0   <- prcomp(t(logCPM), scale. = FALSE)
+pc_df  <- tibble::as_tibble(pca0$x[,1:2], rownames = "sample") %>%
+  left_join(qc_df, by="sample")
+
+ggplot(pc_df, aes(PC1, PC2, color = dex, shape = cell, size = libsize)) +
+  geom_point() + scale_size_continuous(range = c(2.5,6)) +
+  labs(title="PCA（粗い正規化：logCPM）", subtitle="規模・ブロックの影響を事前確認")
+
+cor_PC1_lib <- cor(pc_df$PC1, log10(pc_df$libsize))
+message(sprintf("PC1 と log10(library size) の相関: %.3f", cor_PC1_lib))
+```
+
+### P4 正規化・分散安定化（ライブラリ補正 → VST）
+
+**問題**：サンプル間の総量差と、平均が大きいほど分散も大きくなる**平均--分散依存**。
+
+**目的**：まず**サイズ係数**で総量を合わせ、次に**分散安定化**でばらつきを均質化し、比較可能な空間を作る。
+
+**ワークフロー**：
+
+1.  低カウント除去（群設計を考慮）→ 2) サイズ係数（RLE）→ 3) 分散安定化（VST）→ 4) RLE/可視化で妥当性確認。
+
+**手法**：`filterByExpr`、`DESeq2::estimateSizeFactors`、`DESeq2::vst`、RLEプロット、PCA。
+
+**使用パッケージ・関数**：`edgeR`、`DESeq2`、`matrixStats::rowMedians`、`DESeq2::plotPCA`。
+
+``` r
+# --- P4: 正規化・分散安定化 -----------------------------------------------
+# 低カウント除去（群デザインを尊重）
+y <- DGEList(counts = cts, group = colData(se)$dex)
+keep <- edgeR::filterByExpr(y, group = colData(se)$dex)
+se_f <- se[keep, ]
+
+# DESeq2データセット & サイズ係数（RLE）
+dds <- DESeqDataSet(se_f, design = ~ cell + dex)
+dds <- estimateSizeFactors(dds)
+sf  <- sizeFactors(dds); print(sf)
+
+# VST（可視化・距離・クラスタ安定化に有用）
+vsd <- vst(dds, blind = TRUE)
+
+# RLEプロット（理想は各箱の中央値≈0）
+rle_mat <- assay(vsd) - matrixStats::rowMedians(assay(vsd))
+boxplot(as.data.frame(rle_mat), outline = FALSE, las = 2,
+        main = "RLEプロット（分散安定化後の中央値差）", ylab = "相対対数発現")
+
+# PCA（群・ブロック・過補正の点検）
+DESeq2::plotPCA(vsd, intgroup = c("dex","cell"))
+
+# サンプル間距離（外れ・群内一貫性）
+dist_mat <- dist(t(assay(vsd)))
+pheatmap::pheatmap(as.matrix(dist_mat),
+                   annotation_col = as.data.frame(colData(se_f)[,c("dex","cell")]))
+```
+
+### P5 再現性・外れ値の点検 ＋ 差分解析（効果量縮約込み）
+
+**問題**：技術的ばらつきや外れ値が差分検出を不安定にし、推定のばらつき（とくに小標本・低発現）を過大評価しがち。
+
+**目的**：距離・相関・影響度で再現性と外れを点検し、**縮約推定**を用いて効果量のばらつきを抑えた差分解析を行う。
+
+**ワークフロー**：
+
+1.  本解析（分散の借用・回帰）→ 2) 効果量縮約 → 3) MAと上位表 → 4) 影響度（Cook's距離）の概観。
+
+**手法**：`DESeq2::DESeq`、`lfcShrink(type="apeglm")`、MAプロット、Cook's距離。
+
+**使用パッケージ・関数**：`DESeq2`、`apeglm`。
+
+``` r
+# --- P5: 再現性・外れ点検 + 差分解析 --------------------------------------
+dds <- DESeq(dds)
+
+# 差分（trt vs untrt）
+res <- results(dds, contrast = c("dex","trt","untrt"))
+
+# 効果量縮約（apeglm）
+coef_name <- grep("dex.*trt.*vs.*untrt", resultsNames(dds), value = TRUE)[1]
+res_shr   <- lfcShrink(dds, coef = coef_name, type = "apeglm")
+
+summary(res_shr)
+plotMA(res_shr, main = "MA plot (lfcShrink: apeglm)", ylim = c(-4,4))
+
+# 上位ヒット
+top_tbl <- as_tibble(res_shr, rownames = "gene_id") %>%
+  arrange(padj) %>% filter(!is.na(padj)) %>% slice(1:20)
+print(top_tbl)
+
+# 影響度（Cook's距離 99%分位・サンプル別）
+ck <- assays(dds)[["cooks"]]
+ck_max <- apply(ck, 2, function(v) quantile(v, 0.99, na.rm=TRUE))
+barplot(ck_max, las = 2, main = "Cook's distance (99%分位)", ylab = "Cooks 99th percentile")
+```
+
+
+# 付録：QC概念を「マルチ」にとらえて理解を深めていこう
+
+QCそのものの原理原則をおさえて本質を捉えることで、それらを一般化して、様々な階層のオミクスへと拡張して、展開していくスキルを身につけていくことも大事である。ここでは、他のオミクス階層の場合のQC・前処理の概要を示す。各自調べて、RNA-seqと同様に具体的課題と解決方法の原理、実装方法を含めて、理解するように。
+
+## 質量分析（プロテオーム／メタボローム）
+
+| 段階        | 原理（なぜ）                     | データ現象                               | 検出・管理の要点                       |
+|----------------|-----------------|---------------------|--------------------|
+| P1 同定     | ラベル・参照・標準の誤扱い       | 参照比逸脱、標準不回収                   | 割付表照合、参照比・回収率の監査       |
+| P2 信号     | 電離効率低下・時間ずれ・校正ずれ | 総量の滑り、保持時間シフト、同定数低下   | 確認用試料の時系列監視と再校正         |
+| P3 かたより | ドリフト・残留混入・日差         | 時系列トレンド、空試料ピーク、バッチ分離 | 時間補正、空試料監視、残差補正         |
+| P4 正規化   | 注入量差・形状差・比圧縮         | スケール不一致、右裾、比縮小             | 内部基準・分位合わせ・分散安定化       |
+| P5 再現     | 検出・整列の不安定、欠測機構     | 変動増大、群偏在の欠測                   | 確認用CV・相関で判定、機構に応じた補完 |
+
+### P1 同定・整合性
+
+**原理**：同時定量用ラベルの割付や内部標準・参照測定の取り扱いに誤りが生じる。
+
+**データ現象**：参照比の逸脱、内部標準の回収不良。
+
+**検出・管理**：ラベル割付表・参照比・内部標準の回収率を照合し、整合しない試料は再点検する。
+
+### P2 信号品質
+
+**原理**：電気噴霧の効率低下（基質効果）、保持時間のずれ（カラム劣化や温度変動）、質量校正のずれ、確率サンプリングによる取りこぼし。
+
+**データ現象**：総イオン量の時間的な滑り、保持時間のシフト、質量誤差の増加、同定数の減少、ピーク形状の崩れ。
+
+**検出・管理**：確認用混合試料を列に挿入して時系列で監視し、必要に応じて校正・部品交換・測定条件の最適化を行う。
+
+### P3 系統的偏り・汚染
+
+**原理**：測定順に沿った機器ドリフト、前試料の残留（キャリーオーバー）、日・装置・オペレーター差。
+
+**データ現象**：確認用試料の強度が時間とともに一方向に変化、空試料にも特定のピークが出現、主成分空間でバッチごとに分離。
+
+**検出・管理**：確認用試料にもとづく**時間ドリフト補正**、空試料の監視、残存するバッチ差の統計的補正。測定順は計画段階で分散配置する。
+
+### P4 正規化・較正
+
+**原理**：注入量やイオン化効率の差が全体量の差を生み、強度分布の形状もサンプル間で異なる。ラベル法では共分離により比が縮むことがある。
+
+**データ現象**：スケールの不一致、右に裾を引く分布、比の縮小。
+
+**検出・管理**：内部標準や参照チャンネル、分位合わせや分散安定化により、スケールと形状を統一する。ラベル法では参照比にもとづく補正で比の安定性を高める。
+
+### P5 再現性・外れ値
+
+**原理**：ピーク検出・整列の不安定、検出限界付近の欠測（左側の打ち切り）。
+
+**データ現象**：繰り返しの変動増大、群ごとの欠測の偏り。
+
+**検出・管理**：確認用試料のばらつき（変動係数）や繰り返し相関で合否を判定し、欠測は発生機構（偶然か検出限界か）に応じて適切な補完法を用いる。
+
+## シングルセル
+
+| 段階        | 原理（なぜ）           | データ現象                     | 検出・管理の要点                     |
+|----------------|----------------|-------------------|-----------------------|
+| P1 同定     | 二重封入・ラベル交差   | 分子数過多、相反指標の同時高値 | 二重検出・ラベル重複の同定と除去     |
+| P2 信号     | 破損・遊離分子の混入   | 小器官比の上昇、量の極端       | 品質指標で外れ除去、混入の差し引き   |
+| P3 かたより | 試薬・日付・周期差     | バッチが主分離軸               | 量合わせ後のデータ統合と事前後比較   |
+| P4 正規化   | 捕捉効率差・ヘテロスケ | スケール不一致、強発現の不均一 | 量合わせ＋確率モデルによる均質化     |
+| P5 再現     | 希少型の取りこぼし等   | 構成の揺れ、指標の不一致       | クラスタ安定性と擬似バルク整合で確認 |
+
+### P1 同定・整合性
+
+**原理**：一つの容器に複数細胞が同封される、または混合実験のラベルが交差する。
+
+**データ現象**：単一細胞としては不自然に多い分子数、異なる細胞系譜の指標が同時に高い。
+
+**検出・管理**：二重封入の確率モデルやラベル重複の検査で同定し、除去する。遺伝型情報があれば分離推定を行う。
+
+### P2 信号品質
+
+**原理**：細胞破損・分解により細胞小器官由来の読み取りが増え、周囲の遊離分子が混入する。
+
+**データ現象**：小器官関連の読み取り比率の上昇、分子数・遺伝子数の極端な外れ。
+
+**検出・管理**：品質指標の分布から外れ細胞を除去し、遊離分子の寄与を差し引く。
+
+### P3 系統的偏り・汚染
+
+**原理**：試薬・キット・日付の違い、細胞周期の位相差。
+
+**データ現象**：低次元空間でバッチが主な分離軸になる。
+
+**検出・管理**：量の補正の後、データ統合手法でバッチ差を弱め、統合前後で既知マーカーの一貫性と混合度を確認する。
+
+### P4 正規化・較正
+
+**原理**：捕捉効率の差により細胞間の総分子数が異なり、強度が大きいほどばらつきも大きくなる。
+
+**データ現象**：スケールの不一致、強発現遺伝子での不均一な変動。
+
+**検出・管理**：細胞ごとの**量合わせ**の後、確率モデルにもとづく**分散の均質化**を行い、安定に変動する遺伝子を選んで表現空間を構築する。
+
+### P5 再現性・外れ値
+
+**原理**：希少細胞の取りこぼし、過度なクラスタ分割。
+
+**データ現象**：測定単位ごとに細胞型構成が揺れる、同一細胞型の指標が再現しない。
+
+**検出・管理**：クラスタの安定性指標や「擬似バルク」（細胞型合算）と外部参照との整合で妥当性を確認する。
+
+## メチローム（チップ／全ゲノム）
+
+| 段階        | 原理（なぜ）               | データ現象                     | 検出・管理の要点               |
+|----------------|-----------------|--------------------|--------------------|
+| P1 同定     | 取り違え                   | 性別・指標不一致               | 性別推定・遺伝的指標で照合     |
+| P2 信号     | 結合・色素・深さの不足     | 非検出点・弱信号の増加         | 検出性指標での選別             |
+| P3 かたより | 位置・日・型の差／配列特性 | プレート集団化／配列依存の偏り | 専用補正・共変量調整           |
+| P4 正規化   | 背景・型差／深さ差         | 分布の不揃い                   | 背景・型補正／平滑化と重み付け |
+| P5 再現     | 技術ばらつき               | 反復の不一致                   | 相関・既知領域の方向性で確認   |
+
+
+## アレイ（450k/EPIC）
+
+* **P1 原理**：取り違え（**sample swap**）。
+
+  **データ現象**：性別推定・SNPプローブの不一致（**getSex**, **SNP probes**）。
+  
+  **検出・管理**：性別・SNP照合（**minfi**, **ewastools**）。
+  
+* **P2 原理**：結合不良・色素差・低ビーズ数（**hybridization**, **dye bias**, **beadcount**）。
+
+  **データ現象**：検出p高値・弱信号（**detection P**）。
+  
+  **検出・管理**：品質レポートと不良プローブ除外（**qcReport**, **detectionP**）。
+  
+* **P3 原理**：プレート/日/プローブ型差・細胞組成差（**plate effect**, **Type I/II**, **cell composition**）。
+
+  **データ現象**：PCAでプレート分離。
+  
+  **検出・管理**：背景・色素・型補正と組成推定（**Noob/FunNorm**, **BMIQ**, **estimateCellCounts**, **ComBat**）。
+  
+* **P4 原理**：スケール差・型差。
+
+  **データ現象**：β値/M値分布の不揃い（**beta/M values**）。
+  
+  **検出・管理**：補正後の尺度で解析（**M-value modeling**）。
+  
+* **P5 原理**：技術ばらつき。
+
+  **データ現象**：反復の相関低下。
+  
+  **検出・管理**：反復相関・既知CpGの方向性（**smoking CpGs**）。
+
+## WGBS/oxBS
+
+* **P1**：取り違え（**SNP/sex chromosome depth**）。
+
+* **P2**：変換効率・深さ（**bisulfite conversion rate**, **coverage**）。
+
+* **P3**：配列特性・方向バイアス（**GC bias**, **strand bias**）。
+
+* **P4**：平滑化・重み付け（**BSmooth**, **depth weighting**）。
+
+* **P5**：領域差の再現（**DMR reproducibility**）。
+
+
+## ChIP-seq / ATAC-seq
+
+| 段階        | 原理（なぜ）                   | データ現象                                                      | 検出・管理の要点                                 |
+|---------------|---------------|-------------------------|-------------------|
+| P1 同定     | 標的・対照の誤設定             | 既知標的で信号不在                                              | 既知領域での対照比較                             |
+| P2 信号     | 酵素活性・抗体特異性の不足     | 開始近傍の集積低下（TSS）、ピーク内割合低（FRiP）、断片長の乱れ | 主要指標の定量と閾値管理                         |
+| P3 かたより | ドリフト・残留・配列特性       | 時系列滑り、空試料ピーク、配列依存                              | 時間補正、空試料監視、残差補正                   |
+| P4 正規化   | 深さ差／疎な行列               | 高さ不一致、低深さで消失                                        | 深さスケーリング、単一細胞は重み付け後に低次元化 |
+| P5 再現     | 検出の不安定・標的の当たり外れ | 独立測定で重なり低                                              | 再現性指標（重なり率・IDR 等）で判定             |
+
+
+### P1 同定・整合性
+
+* **原理**：標的・対照の誤設定（**target antibody**, **input/IgG control**）。
+
+* **データ現象**：既知標的領域でシグナル不在。
+
+* **検出・管理**：既知座の検証（**positive loci**）。
+
+### P2 信号品質
+
+* **原理**：切断酵素活性・抗体特異性の不足（**Tn5 activity**, **antibody specificity**）。
+
+* **データ現象**：開始点近傍の集積低下、ピーク内割合低、断片長周期性の崩れ、ミト過多（**TSS enrichment**, **FRiP**, **fragment length periodicity**, **mitochondrial fraction**）。
+
+* **検出・管理**：主要指標の定量と閾値管理（**ATACseqQC**, **ChIPQC**）。
+
+### P3 系統的偏り・汚染
+
+* **原理**：測定順ドリフト・残留・配列特性（**run-order drift**, **carryover**, **mappability/GC**）。
+
+* **データ現象**：時系列トレンド、空試料ピーク、GCと強度の相関。
+
+* **検出・管理**：時間補正・空試料監視・統計補正（**LOESS**, **blank**, **ComBat**）。
+
+### P4 正規化・較正
+
+* **原理**：読み取り深さ差・疎行列（**library depth**, **sparsity**）。
+
+* **データ現象**：高さ不一致、低深さで消失。
+
+* **検出・管理**：深さスケーリング／単一細胞は重み付け後の低次元化（**CPM/RPKM/TMM in peaks**, **TF-IDF→LSI**）。
+
+### P5 再現性・外れ値
+
+* **原理**：ピーク検出の不安定・標的の当たり外れ（**peak caller variability**）。
+
+* **データ現象**：独立測定での重なり低下。
+
+* **検出・管理**：再現性評価・相関・クラスタ安定性（**IDR**, **DiffBind**）。
+

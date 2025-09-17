@@ -1,0 +1,710 @@
+---
+title: "遺伝子・タンパク質のアノテーション変換 — 演習資料（airway）"
+author: "matsui-lab / R omics演習"
+output:
+html_document:
+toc: true
+toc_float: true
+number_sections: true
+df_print: paged
+
+---
+
+## 目的とゴール
+
+本演習では、**RNA-seq (airway)** データを題材に、遺伝子・タンパク質の**アノテーション（注釈）**を理解し、Rで**再現的に変換・統合**できるようになることを目的とする。
+
+* アノテーションの定義とID体系（Ensembl / Entrez / HGNC / UniProt）の俯瞰
+* 実データにおける課題（ID不一致・重複・版差・多対多）と対処法
+* **EnsDb + OrgDb + AnnotationHub** を用いた堅牢な実装パターン
+* airwayカウント行（Ensembl Gene ID）→ **SYMBOL/ENTREZ/遺伝子長/生物型/染色体/UniProt** の付与
+* 変換用の**再利用可能なR関数**の雛形を提供
+
+---
+
+## アノテーションとは（定義）
+
+アノテーションは、**配列やIDに意味（属性）を結びつける写像**である。
+
+* 例：$f: \text{ENSEMBL_GENE} \to {\text{SYMBOL}, \text{ENTREZID}, \text{GENE_NAME}, \dots}$
+* 別ID空間間の変換：$g: \text{ENSEMBL_GENE} \to \text{UniProtKB_AC}$（遺伝子→タンパク質）
+
+> **ポイント**：同じ生物学的実体に対して**複数のID**が存在し、**版（リリース）**や**参照アセンブリ**によって対応が変わり得る。
+
+## 「意味」とは何か？
+
+アノテーションの「意味」は、IDに紐づく**解釈可能な属性の集合**である。粒度（gene / transcript / protein / site）と版（リリース）を前提に、以下の8カテゴリに整理できる。
+
+1. **同一性・同定（Identity / Xref）**
+   安定ID、別名（synonym）、旧称、クロスリファレンス、版情報、粒度。  
+   *例*: Ensembl Gene ↔ Entrez ↔ HGNC Symbol、UniProt AC、RefSeq。  
+   *使いどころ*: ID統一、コホート横断比較、再現性の担保。  
+
+2. **構造・座標（Structural / Locus / Proteoform）**  
+   染色体座標、エクソン/イントロン、biotype、CDS/UTR 長、アイソフォーム、ドメイン、PTM部位。  
+   *例*: `gene_biotype`, exon 合計長, Pfam/InterPro, phospho-site。  
+   *使いどころ*: フィルタリング（protein\_coding 等）、TPM算出、アイソフォーム解析。  
+
+3. **機能（Function / Process / Pathway）**  
+   GO（BP/MF/CC）、Reactome/KEGG/WikiPathways、EC番号。  
+   *使いどころ*: ORA/GSEA、機能解釈、仮説生成。  
+
+4. **文脈（Context / Localization / Expression）**  
+   組織・細胞型発現、サブセルローカリゼーション、発生段階/時系列。  
+   *例*: GTEx/HPA の発現、HPAの細胞内局在。  
+   *使いどころ*: 生物学的妥当性の確認、ターゲット優先順位付け。  
+
+5. **相互作用・制御（Interaction / Regulation）**  
+   PPI、複合体、転写因子標的、miRNA標的、経路内結線。  
+   *例*: STRING, BioGRID, TRRUST。   
+   *使いどころ*: ネットワーク解析、モジュール同定、介入候補探索。  
+
+6. **臨床・表現型・薬剤（Clinical / Phenotype / Drug）**  
+   疾患関連、表現型語彙、病原性解釈、薬剤標的/作用機序。  
+   *例*: MONDO/DO, DisGeNET, ClinVar, HPO, DrugBank/ChEMBL/DGIdb。  
+   *使いどころ*: 疾患エンリッチ、ドラッガビリティ評価、再目的化。  
+
+7. **進化・系統（Orthology / Phylogeny / Family）**  
+   オルソログ/パラログ、ファミリー、保存性スコア。  
+   *例*: Ensembl Compara, OrthoDB。  
+   *使いどころ*: モデル生物の知識転用、保存モチーフの強調。  
+
+8. **証拠・品質（Evidence / Provenance / Quality）**  
+   エビデンスコード（GO/ECO）、レビュー状態（Swiss-Prot/TrEMBL）、スコア/信頼度。  
+   *使いどころ*: 解析の**重み付け**、不確実性管理、監査可能性。  
+
+### カテゴリ別：代表DBとRからの入口（最小セット）
+
+| カテゴリ      | 主なDB                                                    | Rでの入口（例）                                            |
+| --------- | ------------------------------------------------------- | --------------------------------------------------- |
+| 同一性・同定    | Ensembl, NCBI Gene, HGNC                                | `org.Hs.eg.db`, `ensembldb`, `AnnotationHub`        |
+| 構造・座標     | Ensembl, UniProt, InterPro/Pfam                         | `ensembldb`（genes/exons/proteins）, `UniProt.ws`（補完） |
+| 機能        | GO, Reactome, KEGG, MSigDB                              | `msigdbr`, `clusterProfiler`, `ReactomePA`          |
+| 文脈        | GTEx, Human Protein Atlas                               | `hpar`（HPA）, 公開表との結合                                |
+| 相互作用・制御   | STRING, BioGRID                                         | `STRINGdb`, `igraph`                                |
+| 臨床・表現型・薬剤 | DisGeNET, MONDO/DO, ClinVar, HPO, DrugBank/ChEMBL/DGIdb | `DOSE`, `disgenet2r`（補助）, API/TSV取込                 |
+| 進化・系統     | Ensembl Compara, OrthoDB                                | `biomaRt`/`AnnotationHub`（補助）                       |
+| 証拠・品質     | GO/ECO, UniProt Review                                  | `AnnotationDbi::select(..., "EVIDENCE")` など（DB依存）   |
+
+
+
+## 遺伝子セットとは
+
+
+**遺伝子セット（gene set）**は、本質的には**語彙（ボキャブラリ）**と**遺伝子集合**の対応のことである。
+語彙（用語・経路・表現型・薬剤標的など）を $v \in \mathcal{V}$、ユニバースを $U$ とすると、
+各語彙 $v$ に対して **集合関数** $S(v)\subseteq U$ を持ち、解析では
+
+* **ルールベース**：$H\subseteq U$ と $S(v)$ の**決定的対応**（1:1, 1:多, 多:多の扱い）
+* **統計的**：$H$ と $S(v)$ の**重なりの有意性**（ORA=超幾何/ Fisher、GSEA など）
+
+で「語彙⇄遺伝子」を**定量的に結び付ける**のが基本です。
+
+### よく使う語彙系と代表的遺伝子セットDB
+
+| 語彙系（何を表すか）  | 代表DB/ライブラリ（例）                                              | 主ID                   | Rからの入口（例）                              | 用途の要点                         |
+| ----------- | ---------------------------------------------------------- | --------------------- | -------------------------------------- | ----------------------------- |
+| **一般機能／経路** | **MSigDB**（Hallmark, C2/Reactome, C5/GO, C7/Immunologic 他） | Entrez/Symbol         | `msigdbr`, `clusterProfiler`, `fgsea`  | 研究定番。**スナップショット日/バージョン**記録を推奨 |
+|             | **Reactome**                                               | Entrez/UniProt        | `ReactomePA`, `clusterProfiler`        | 反応経路の階層が明瞭                    |
+|             | **KEGG**                                                   | Entrez                | `clusterProfiler::enrichKEGG`          | 商用・再配布条件に注意                   |
+|             | **WikiPathways**                                           | Entrez/Symbol         | `clusterProfiler::enricher`（GMT取込）     | オープンな経路集                      |
+| **GO 用語**   | Gene Ontology（BP/MF/CC）                                    | Entrez/Symbol         | `clusterProfiler::enrichGO`, `msigdbr` | ORA/GSEA双方で定番                 |
+| **疾患・表現型**  | Disease Ontology（DO）, **DisGeNET**, **HPO**                | Entrez/Symbol/UniProt | `DOSE`, `disgenet2r`（補助）               | 疾患・症状語彙と結び付け                  |
+| **薬剤・標的**   | **Enrichr**（Drug/ChEMBL/DGIdb系ライブラリを含む）, DrugBank/ChEMBL   | UniProt/Entrez        | `enrichR`                              | 再目的化・ドラッガビリティ                 |
+| **転写因子・制御** | **Enrichr**（ChEA/ENCODE 由来）, TRRUST                        | Symbol/Entrez         | `enrichR`, `TFEA.ChIP`                 | TF ターゲット集合                    |
+| **細胞型**     | **Enrichr**（CellMarker/PanglaoDB 系）, HPA                   | Symbol/Entrez         | `enrichR`                              | 組織・細胞型の文脈付与                   |
+| **発現署名**    | **LINCS/L1000**, MSigDB（Hallmark/Oncogenic/Immunologic）    | Symbol/Entrez         | `enrichR`, `msigdbr`                   | 薬剤応答・状態署名                     |
+
+> メモ: *ID種（Entrez/UniProt/Symbol）*はライブラリごとに異なるため、**前段でID統一**し、**ユニバース**（測定可能遺伝子）を固定してから ORA/GSEA を回すのが安全。
+
+
+## どのようにID間を対応づけるのか？ - ルールベース vs 統計的
+
+アノテーション後の*「何と何を、どう対応づけるか」*は下流解析の中核である。方式は大きく2類型に分かれる。
+
+### ルールベース（決定的）マッチング
+
+IDキーで**機械的に写像**する方式。再現性が高く、監査しやすい。
+
+
+| パターン    | 典型例                        | 対応ルール（例）                          | 注意点              | 例                                                 |
+| ------- | -------------------------- | --------------------------------- | ------------------------ | --------------------------------------------------------------- |
+| **1:1** | Ensembl Gene → HGNC Symbol | 完全一致で置換                           | 旧名・別名の正規化（HGNChelper）が前提 | 「`IL8` を **CXCL8** に正規化し、炎症関連遺伝子の集合定義と整合した。」                    |
+| **1:多** | Gene → UniProt アイソフォーム     | **Swiss-Prot優先** → canonical → 先頭 | ルールを明文化・固定               | 「`FKBP5` は複数アイソフォームに対応。**canonicalの UniProt** を代表として経路被覆を評価した。」 |
+| **多:1** | Peptide 群 → Protein        | 和/平均/最大、加重（独立ペプチド数）               | 集約関数をプロトコル化              | 「共有ペプチドは重みを下げ、**ペプチド数で加重平均**したタンパク質量を用いた。」                      |
+| **多:多** | Gene ↔ Pathway (Reactome)  | 全一致/任意一致、**被覆率**で閾値               | ユニバースと閾値で結果が大きく変わる       | 「`GR応答` 経路の**被覆率=18/43**。任意一致で評価し、ユニバースは測定可能遺伝子に限定。」            |
+
+
+**よく使う集約・選択ルール**
+
+* **選択**：Swiss-Prot（レビュー済）優先、canonical優先、evidence/code優先。
+* **集約**：和・平均・中央値・最大、**重み付き**（証拠・ユニーク度・ペプチド本数）。
+* **被覆指標**：経路被覆率（命中遺伝子 / 経路遺伝子）、ドメイン被覆率。
+
+> 解析結果ログに**マッピング率・未対応ID一覧・適用ルール**を必ず残すとあとでアノテーションの品質が評価できてよい。
+
+
+### 統計的マッチング（集合 vs 集合）
+
+**集合同士の重なりが偶然以上か**を検定・スコア化して判断する方式。すなわち、私たちの「ヒット集合」と、辞書（語彙）側の「遺伝子セット」との**重なりが偶然以上か**を、公平に判定する。
+
+#### 用語整理
+
+* **ユニバース $U$**：今回の実験で**測定できた遺伝子の全名簿リスト**（バックグラウンド）。  
+* **ヒット集合 $H$**：DEGなど「**気になる遺伝子のリスト**」。  
+* **語彙セット $S$**：GO用語や経路など「意味づけの名簿リスト」。  
+* 判定したいこと：「$H$ と $S$ の重なり $H\cap S$ が、**偶然**にしては多すぎないか？」
+
+
+#### (A) ORA（過剰代表性解析）
+
+**問題の数学的定義**：
+
+* 入力：ヒット遺伝子集合 $H$（例：DEG）、ユニバース $U$、各遺伝子集合 $S_k$。
+
+* 検定：**超幾何分布**（＝Fisherの片側検定と同値）。
+
+  * 記号：$N=|U|, n=|H|, K=|S_k|, x=|H\cap S_k|$
+  
+  * 片側 $p$ 値：$p=\sum_{i=x}^{\min(K,n)} \dfrac{\binom{K}{i}\binom{N-K}{n-i}}{\binom{N}{n}}$
+
+* 重要：**ユニバースの定義**（測定可能遺伝子に限定）、多重検定補正、集合サイズの極端さ対策。  
+
+
+**直感的説明**：
+
+箱の中に $N$ 個の玉（=ユニバース）。そのうち $K$ 個は「語彙ラベル付き」（=集合 $S$）。  
+
+私たちは $n$ 回引いてヒット $H$ を作ったと考えると、**ラベル玉が $x$ 個以上当たる確率**が $p$ 値。  
+
+* 期待される重なり：$E[x] \approx n\times (K/N)$
+
+  例）$N=10,K=4,n=3$ なら期待値 $= 1.2$。実測値 $x{=}2$ は期待より多め。  
+  これが**偶然でもよく起きる**のかを $p$ 値で判定する。  
+
+* **やること（手順）**
+
+  1. **ユニバース $U$ を先に固定**（測定できた遺伝子だけ）。  
+  2. ヒット $H$ を作る（例：FDR<0.05 など）。Up/Down を分けるなら**集合も分ける**。  
+  3. 各語彙セット $S_k$ について、$x{=}|H\cap S_k|$ を数える。  
+  4. 超幾何または Fisher で $p$ 値 → 多重検定補正（BH など）。  
+
+* **よくある落とし穴**  
+
+  ユニバース未固定（＝ヒト全遺伝子を背景）が**過大有意**の原因 / 極端に小さい or 大きい集合は不安定。
+  
+**よく使う解釈文テンプレ**
+
+> 「DEG（$n=\ldots$）は **Reactome: Glucocorticoid receptor pathway**（$K=\ldots$）に対して超幾何検定によって濃縮された(enriched)（$x{=}\ldots$，**FDR=…**）。バックグラウンド遺伝子は測定可能遺伝子（$N{=}\ldots$）とした。」
+
+
+**(i) ORA（超幾何／Fisher）最小例**
+
+```r
+# 入力: hits (SYMBOLのベクトル), universe (全測定SYMBOL),
+#       gene_sets: list(SET = c("TP53","NFKB1",...))
+library(stats)
+
+ora_one <- function(hits, universe, set) {
+  H <- intersect(hits, universe); S <- intersect(set, universe)
+  N <- length(universe); n <- length(H); K <- length(S); x <- length(intersect(H, S))
+  # 片側 (over-representation)
+  p_hyper <- phyper(q = x - 1, m = K, n = N - K, k = n, lower.tail = FALSE)
+  # Fisher片側
+  mat <- matrix(c(x, n - x, K - x, N - K - (n - x)), nrow = 2)
+  p_fisher <- fisher.test(mat, alternative = "greater")$p.value
+  c(x = x, K = K, n = n, N = N, p_hyper = p_hyper, p_fisher = p_fisher)
+}
+```
+
+**(ii) ORA（clusterProfiler＋msigdbr）**
+
+```r
+library(msigdbr); library(clusterProfiler)
+msig <- msigdbr(species = "Homo sapiens", category = "H") |>
+        split(~ gs_name, drop = TRUE) |>
+        lapply(function(df) unique(df$gene_symbol))
+
+res <- enricher(gene = hits, TERM2GENE = stack(msig)[,2:1],
+                universe = universe, pAdjustMethod = "BH")
+```
+
+#### (B) GSEA（順位付きリスト）
+
+**形式的説明**:
+
+* 入力：遺伝子の**連続スコア**（例：logFCの符号付き統計量）を持つ**順位付きリスト**。
+* 指標：走査で得る**Enrichment Score (ES)**、**正規化NES**。
+* 帰無分布：**遺伝子ラベル置換**（またはサンプル置換）、FDRは置換分布で推定。
+* 長所：緩やかな一様変動や片側効果に敏感。閾値不要。
+
+**直感的説明**：遺伝子を効果の強さ順に縦に並べ、**上から下へ歩く**。
+
+集合 $S$ の遺伝子に出会ったら「+」で押し上げ、違ったら「−」で少し戻す。**最も押し上がった高さ**が ES（Enrichment Score）。
+
+* **強み**：閾値でヒット/非ヒットに**二分しない**ので、弱い広域効果にも敏感。
+* **やること（手順）**
+
+  1. 各遺伝子に符号付き統計量（例：$t$ 値, logFC×−log$p$）をつけ、**並べ替え**。
+  2. 各集合 $S_k$ で ES を計算 → 集合サイズの影響を除くため **NES（正規化スコア）** に変換。
+  3. *並び替え（permutation）*で帰無分布を作り、FDR を推定。
+  4. **leading edge**（ES に最も寄与した上位部分）を抜き出して生物学的に解釈。
+* **よくある落とし穴**
+  並び替え回数が少ない / 集合が極端に小さい・大きい / 入力ランキングの符号が逆。
+
+**解釈文テンプレ**
+
+> 「logFCベースのランキングを用いてGSEAを適用したところ、 **GO: response to glucocorticoid** に対して **NES=…，FDR=…**で濃縮した。leading edge遺伝子は {**TSC22D3, FKBP5, …**}であった。」
+
+
+**(iii) GSEA（fgsea）**
+
+```r
+library(fgsea); # ranks: named numeric (names=SYMBOL), 大きいほど上位
+fg <- fgsea(pathways = msig, stats = ranks, minSize = 10, maxSize = 500, nperm = 10000)
+```
+
+
+#### (C) 競合 vs 自己完結 — 「外と比べるか？」か「内だけ見るか？」
+
+* **競合（competitive）**：集合**外**と比べて、集合**内**がどれだけ強いか。
+  例：`limma::camera` は**遺伝子間相関を補正**して判定。
+* **自己完結（self-contained）**：集合**内だけ**で効果があるか。
+  例：`limma::roast`。少サンプルや強相関ならこちらが有利な場面も。
+
+> 迷ったら：群比較での**厳しめの判定** → camera、集合の**存在自体の検定** → roast。
+
+
+**(iv) camera（競合型, 相関補正）**
+
+```r
+library(limma)
+# expr: genes x samples, design: model.matrix(~ group)
+# idx: list(SET = which(rownames(expr) %in% msig$SET))
+cam <- camera(y = expr, index = idx, design = design)
+```
+
+#### (D) 個別サンプルのスコア化 — 「この患者でその経路は強いのか？」
+
+* **GSVA / ssGSEA / singscore**：各サンプルについて集合 $S$ の**活性スコア**を作る。
+
+* **使いどころ**：群間比較、連続表現型（重症度など）との回帰、サバイバル解析。
+
+
+##### メソッド選択の指針要点
+
+* **「ヒット集合を解釈」** → ORA（超幾何/Fisher）。方向性があれば Up/Down を分ける。
+* **「順位リストを解釈」** → GSEA/fgsea。微弱・広域効果に強い。
+* **「群比較で相関補正したい」** → camera（競合）/ roast（自己完結）。
+* **「サンプルごとにスコア化」** → GSVA/ssGSEA/singscore。
+* **「オミクス間対応」** → まず**ルールベースでID連結**（1:多のルール固定）→ その後に ORA/GSEA。
+
+
+
+
+### 実践Tips: ORAのバックグラウンド（ユニバース）— 選び方と仮説依存性
+
+#### 原則（いちばん大事）
+
+> **ユニバース = 「今回の手順なら**偶然でもヒットになり得た**候補の全体」**
+> すなわち、**測定可能**・**解析に投入**・**IDマッピング可能**だった要素の集合。
+
+これを外すと、過大有意（false positive）**や**過小有意（パワー低下）が起きる。
+
+
+### 決め方（4ステップ）
+
+1. **測定可能性**：今回のプラットフォームで観測可能だったもの
+
+   * RNA-seq → **QC後に残った遺伝子**（低発現フィルタ後）
+   * プロテオミクス → **同定済みタンパク質**（PSM/ペプチド閾値後）
+   * パネル系 → **パネル収載遺伝子**
+   
+2. **解析投入の実績**：差分解析に**実際に入れた**もの（独立フィルタ後の検定対象）
+
+3. **IDマッピング**：用いる用語DBへ**確実に写像できた**もの（`S ∩ U` にトリミング）
+
+4. **仮説による条件付け（必要な時のみ）**：
+
+   * 例）「**タンパク質コーディング**に限定」「**分泌タンパク質**に限定」「**ミトコンドリア遺伝子**に限定」
+   * ※ このとき**ユニバースも語彙セットも同じ条件でトリミング**（**二重基準**を避ける）
+
+---
+
+### 代表シナリオとユニバースの選択肢
+
+| 解析シナリオ               | 推奨ユニバース $U$                                          | R実装の要点                                           | 長所 / 注意                    |
+| -------------------- | ------------------------------------------------------ | ------------------------------------------------ | -------------------------- |
+| **RNA-seq DEGの ORA** | **QC後かつ検定対象の遺伝子**（`rowSums`閾値・独立フィルタ通過）に**IDマップ可能**な集合 | `enricher(..., universe=U)`；語彙集合は `S := S ∩ U` に | 現実的で最も公平 / **全遺伝子を背景にしない** |
+| **プロテオームの ORA**      | **同定済みUniProt**（FDR/スコア閾値通過）                           | UniProt基準で揃える（Geneに上げない）                         | 未同定タンパク質を背景に入れない           |
+| **仮説：分泌タンパク質に限定**    | **Secretome として候補になり得た集合**（SignalP 等で定義）               | **UもSも** Secretome でトリミング                        | 条件付けの妥当性を**事前に**明記         |
+| **パネル測定**            | **パネル収載遺伝子**全体                                         | メーカー付与のIDを基準に整合                                  | パネル外を背景に入れない               |
+
+### Enrichr / MSigDB を使った最小実装（R）
+
+**A) Enrichr（Web API; 豊富な語彙ライブラリ）**
+
+```r
+# hits: SYMBOL ベクトル（上位DEGなど）
+# universe: 測定可能SYMBOL（必要に応じて背景に指定）
+library(enrichR)
+dbs <- c("GO_Biological_Process_2023", "Reactome_2022",
+         "WikiPathways_2023_Human", "ChEA_2016")  # 利用前に listEnrichrDbs() で確認
+res_list <- enrichr(genes = unique(hits), databases = dbs)
+# res_list はDBごとのデータフレーム。Adjusted.P.valueやOverlap列で評価
+```
+
+**B) MSigDB（ローカル取得→ORA/GSEA）**
+
+```r
+library(msigdbr); library(clusterProfiler)
+msig <- msigdbr(species = "Homo sapiens", category = "H") |>
+        split(~ gs_name, drop = TRUE) |>
+        lapply(\(df) unique(df$gene_symbol))
+# ORA
+res_ora <- enricher(gene = hits, TERM2GENE = stack(msig)[,2:1],
+                    universe = universe, pAdjustMethod = "BH")
+# GSEA（順位付きリスト ranks: named numeric, names=SYMBOL）
+# library(fgsea); fg <- fgsea(pathways = msig, stats = ranks, nperm = 10000)
+```
+
+
+
+
+## 2. よくあるニーズ（事例ベース）
+
+### シナリオ例
+
+**ミニケースA（airway × デキサメタゾン）**  
+airwayではGR応答遺伝子（例：**FKBP5, TSC22D3** など）が典型的に上昇することが知られているが、SYMBOL正規化を怠ると、別名（**GILZ ⇄ TSC22D3**、**IL8 ⇄ CXCL8**）が原因で**GSEAのヒットが消失**し得る。
+→ *対策*: OrgDbでSYMBOL付与 → HGNChelperで旧名修正 → ユニバースを`rowData`由来で固定。
+
+**ミニケースB（ユニバースの取り違え）**  
+ORA背景を「ヒト全遺伝子」にすると、測定され得ない遺伝子が混ざり**有意度が過大**に。
+→ *対策*: 背景は「カウントテーブルに存在しQC通過した遺伝子集合」。`length(universe)` を結果と一緒に記録。
+
+**ミニケースC（Gene→Proteinの1:多問題）**  
+DEGをプロテオーム経路に写像する際、1遺伝子が**複数UniProtアイソフォーム**に対応し、経路被覆率や部位特異（例：フォスフォサイト）の解釈が揺れます。
+→ *対策*: **Swiss-Prot優先＋canonical選択**、または「全アイソフォーム集合で被覆最大化」など**ルールを明記**し、一貫適用。
+
+
+### ほかの例
+
+| ニーズ                  | 入力ID・粒度                                        | どう処理する                                                           | 出力・DB                     | ハマりどころ                       |
+| -------------------- | ---------------------------------------------- | ---------------------------------------------------------------- | ------------------------- | ---------------------------- |
+| **DEGをGSEA/ORAで解釈**  | Ensembl gene（gene）                             | OrgDbでSYMBOL付与 → HGNChelperで旧名正規化 → **ユニバース＝測定可能遺伝子**に固定         | msigdbr（H/CP）、GO/Reactome | 旧名**dropout**、ユニバース未固定でFDRぶれ |
+| **RNA-seq×プロテオーム照合** | Ensembl gene（gene） vs UniProt（protein/isoform） | EnsDb::proteinsでGene→ENSP/UniProt → **Swiss-Prot優先＋canonical選択** | Gene–Protein対応表（解析用マスター）  | 1:多対応・アイソフォーム混在で集約ルール不明確     |
+| **薬剤標的/疾患知識と接続**     | SYMBOL/Entrez/UniProt                          | ID統一 → Reactome/KEGG/DisGeNET等へマップ                               | パスウェイ・疾患エンリッチ             | DBごとにID種（Entrez/UniProt）が異なる |
+| **外部コホート統合**         | 混在（SYMBOL/Ensembl/旧名）                          | **基準ID空間を宣言**（例：Ensembl v1xx）→一括マッピング→落ちたIDを監査                   | 統合用アノテーション表＋監査ログ          | 版差・別名でマッピング率低下               |
+
+
+---
+
+## 2. 主要アノテーションDBの対応表
+
+| DB                                    | 主対象・粒度                   | 代表ID例                      | 強み                   | 注意点                              |
+| ------------------------------------- | ------------------------ | -------------------------- | -------------------- | -------------------------------- |
+| **Ensembl** (gene/transcript/protein) | 遺伝子・転写産物・タンパク質（GRCh38推奨） | ENSG00000… / ENST… / ENSP… | 階層関係が明瞭、座標と整合        | リリース差（v1xxなど）で内容更新。IDは安定だが属性が変わる |
+| **Entrez Gene (NCBI)**                | 遺伝子                      | 数字（例: 7157）                | 歴史的に広く利用、OrgDbと親和    | 停止ID・統合履歴あり                      |
+| **HGNC**                              | ヒト遺伝子の**承認シンボル**         | TP53 など                    | 正式シンボルの管理            | 俗称/旧称が多数、**重複シンボル**注意            |
+| **UniProtKB** (Swiss-Prot/TrEMBL)     | タンパク質（アイソフォーム含む）         | P0xxxx など                  | 注釈が充実、レビュー済/未レビューの区別 | 同一遺伝子→複数アイソフォーム、**遺伝子IDとは1対多**   |
+
+> **IDパターンの目安**：`^ENSG`（Ensembl gene）、`^[0-9]+$`（Entrez）、`^[A-Z0-9]+$`（UniProt AC）など。
+
+---
+
+## 3. 実データで遭遇する課題と解決指針
+
+### 3.1 代表的な課題
+
+1. **版差（リリース差）**：Ensembl v104 と v110 で属性やクロスリファレンスが変わる。
+2. **多対多**：Ensembl gene ↔︎ UniProt（アイソフォーム多数）。
+3. **旧シンボル・俗称**：HGNC非承認シンボルが混入（例：別名、表記ゆれ）。
+4. **重複シンボル**：TPM/DEG集計時に**行が重複**し、和・平均のルールが必要。
+5. **アセンブリ差**：GRCh37 vs GRCh38 の座標・収録差。
+
+### 3.2 解決の設計原則（5原則）
+
+* **原則A：ソース固定** … Ensembl/UniProt 等、**1つの版**を基準に統一。
+* **原則B：再現性** … AnnotationHub キャッシュで**取得日・版**を記録。
+* **原則C：単位一貫性** … geneレベルか transcript/protein レベルか**粒度を固定**。
+* **原則D：tie-break ルール** … 多対多のときの**決め方を事前定義**（例：Swiss-Prot優先、canonical優先）。
+* **原則E：検証** … サンプルで**手計算・Spot check**し、変換の妥当性を確認。
+
+---
+
+## 4. Rでの実装パターン（Overview）
+
+### 4.1 使う主なパッケージ
+
+* **AnnotationHub / ensembldb / EnsDb**：Ensembl由来のローカルDBで座標・属性取得
+* **AnnotationDbi / org.Hs.eg.db**：Entrez↔︎Symbol↔︎Ensembl のクロス参照
+* **HGNChelper**：旧シンボルの正規化
+* **SummarizedExperiment / DESeq2**：airwayデータ操作
+* **dplyr / tibble / stringr**：データ整形
+
+> **インストール雛形**（必要時）：
+
+```r
+needs <- c("airway","SummarizedExperiment","DESeq2","AnnotationDbi",
+           "org.Hs.eg.db","AnnotationHub","ensembldb","HGNChelper",
+           "dplyr","tibble","stringr","readr","GenomicRanges")
+
+inst <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(inst) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install(inst, update = FALSE, ask = FALSE)
+}
+
+lapply(needs, library, character.only = TRUE)
+```
+
+---
+
+### 4.2 airwayの読み込みとID確認
+
+```r
+library(airway)
+data(airway)
+se <- airway  # SummarizedExperiment
+head(rownames(se))  # Ensembl Gene ID であることを確認（例: "ENSG...")
+```
+
+> **Tip**：`stringr::str_detect(rownames(se), "^ENSG")` でIDパターン検査。
+
+---
+
+### 4.3 EnsDb（GRCh38最新）をAnnotationHubから取得
+
+```r
+ah <- AnnotationHub::AnnotationHub()
+q <- AnnotationHub::query(ah, c("EnsDb", "Homo sapiens", "GRCh38"))
+edb <- q[[length(q)]]  # 一番新しいものを取得（固定したい場合はIDを保存）
+edb
+```
+
+> **再現性**：`AnnotationHub::hubCache()` と `AnnotationHub::hubUrl()` を記録。運用では**取得IDと日付**をテキストに保存しておく。
+
+---
+
+### 4.4 Ensembl Gene → 属性付与（SYMBOL/ENTREZ/遺伝子長など）
+
+```r
+# 変換のキー
+ensg <- rownames(se)
+
+# (A) OrgDb で ENSEMBL→SYMBOL, ENTREZ
+map_org <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = ensg,
+  keytype = "ENSEMBL",
+  columns = c("SYMBOL", "ENTREZID")
+)
+
+# SYMBOL 正規化（HGNChelper）
+map_org$SYMBOL_clean <- HGNChelper::checkGeneSymbols(map_org$SYMBOL)$Suggested.Symbol
+
+# (B) EnsDb で gene_name / biotype / 染色体 / 遺伝子長（エクソン合計長）
+# gene属性
+gattr <- ensembldb::genes(
+  edb,
+  filter = ensembldb::GeneIdFilter(ensg),
+  return.type = "DataFrame",
+  columns = c("gene_id","gene_name","gene_biotype","seq_name")
+) |> as.data.frame()
+
+# エクソン長（遺伝子毎に reduce して合計bp）
+ex_by_gene <- ensembldb::exonsBy(edb, by = "gene")
+ex_by_gene <- ex_by_gene[names(ex_by_gene) %in% ensg]
+len_tbl <- tibble(
+  gene_id = names(ex_by_gene),
+  exon_len_bp = vapply(ex_by_gene, function(gr){ sum(GenomicRanges::width(GenomicRanges::reduce(gr))) }, numeric(1))
+)
+
+# 結合（多対多→一意化）
+ann_gene <- map_org |>
+  dplyr::distinct(ENSEMBL, SYMBOL_clean, ENTREZID, .keep_all = FALSE) |>
+  dplyr::group_by(ENSEMBL) |>
+  dplyr::slice(1) |>
+  dplyr::ungroup() |>
+  dplyr::rename(gene_id = ENSEMBL, SYMBOL = SYMBOL_clean, ENTREZID = ENTREZID) |>
+  dplyr::left_join(gattr, by = "gene_id") |>
+  dplyr::left_join(len_tbl, by = "gene_id")
+
+# SummarizedExperiment の rowData に付与
+rd <- as.data.frame(SummarizedExperiment::rowData(se)) |>
+  tibble::rownames_to_column(var = "gene_id") |>
+  dplyr::left_join(ann_gene, by = "gene_id") |>
+  tibble::column_to_rownames("gene_id")
+SummarizedExperiment::rowData(se) <- S4Vectors::DataFrame(rd)
+
+rd[1:6, c("SYMBOL","ENTREZID","gene_name","gene_biotype","seq_name","exon_len_bp")]
+```
+
+> **遺伝子長の用途**：TPM算出に利用。$\mathrm{TPM}\_i = 10^6,\dfrac{\dfrac{\mathrm{counts}\_i}{L\_i}}{\sum\_j \dfrac{\mathrm{counts}\_j}{L\_j}}$ ここで $L\_i$ は遺伝子長（bp）。
+
+---
+
+### 4.5 Gene → Protein（Ensembl protein / UniProt）
+
+**方針**：まず EnsDb で Ensembl protein ID（ENSP…）と UniProt の対応を取得。必要に応じて\*\*Swiss-Prot（レビュー済）\*\*を優先します。
+
+```r
+# 遺伝子→タンパク質（Ensembl protein と UniProt）
+prot_map <- ensembldb::proteins(
+  edb,
+  filter = ensembldb::GeneIdFilter(ensg),
+  columns = c("gene_id","protein_id","uniprot_id")
+) |> as.data.frame()
+
+# tie-break：UniProtが複数ある場合は Swiss-Prot 形式（英字+数字, 長さ6〜10）を優先する例
+pick_uniprot <- function(x){
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  # 簡易に "[OPQ][0-9]" などのACパターンを優先（必要ならSwiss-Protリストで厳密化）
+  pat <- "^[A-NR-Z][0-9][A-Z0-9]{3}[0-9]$"  # 代表的UniProt ACパターン
+  sp <- x[stringr::str_detect(x, pat)]
+  if (length(sp) > 0) return(sp[1])
+  x[1]
+}
+
+prot_best <- prot_map |>
+  dplyr::group_by(gene_id) |>
+  dplyr::summarise(
+    ENSP_first = dplyr::first(na.omit(protein_id)),
+    UniProt_best = pick_uniprot(uniprot_id)
+  )
+
+# rowData へ結合
+rd2 <- as.data.frame(SummarizedExperiment::rowData(se)) |>
+  tibble::rownames_to_column("gene_id") |>
+  dplyr::left_join(prot_best, by = "gene_id") |>
+  tibble::column_to_rownames("gene_id")
+SummarizedExperiment::rowData(se) <- S4Vectors::DataFrame(rd2)
+
+rd2[1:6, c("SYMBOL","ENSP_first","UniProt_best")]
+```
+
+> **注意**：遺伝子→タンパク質はしばしば**1対多**です。解析目的（例：canonical のみ、全アイソフォーム集約）に応じて**ルールを固定**する。
+
+---
+
+### 4.6 使い回せるヘルパー関数（雛形）
+
+```r
+# (1) Ensembl Gene → SYMBOL/ENTREZ + gene attributes + length
+annotate_genes <- function(ensg, edb, orgdb = org.Hs.eg.db){
+  map_org <- AnnotationDbi::select(orgdb, keys = ensg, keytype = "ENSEMBL", columns = c("SYMBOL","ENTREZID"))
+  map_org$SYMBOL <- HGNChelper::checkGeneSymbols(map_org$SYMBOL)$Suggested.Symbol
+
+  gattr <- ensembldb::genes(edb, filter = ensembldb::GeneIdFilter(ensg), return.type = "DataFrame",
+                            columns = c("gene_id","gene_name","gene_biotype","seq_name")) |> as.data.frame()
+  ex_by_gene <- ensembldb::exonsBy(edb, by = "gene")
+  ex_by_gene <- ex_by_gene[names(ex_by_gene) %in% ensg]
+  len_tbl <- tibble(
+    gene_id = names(ex_by_gene),
+    exon_len_bp = vapply(ex_by_gene, function(gr){ sum(GenomicRanges::width(GenomicRanges::reduce(gr))) }, numeric(1))
+  )
+
+  map_org |>
+    dplyr::distinct(ENSEMBL, SYMBOL, ENTREZID) |>
+    dplyr::group_by(ENSEMBL) |>
+    dplyr::slice(1) |>
+    dplyr::ungroup() |>
+    dplyr::rename(gene_id = ENSEMBL) |>
+    dplyr::left_join(gattr, by = "gene_id") |>
+    dplyr::left_join(len_tbl, by = "gene_id")
+}
+
+# (2) Gene → best UniProt AC（簡易ルール）
+map_uniprot <- function(gene_ids, edb){
+  prot_map <- ensembldb::proteins(edb, filter = ensembldb::GeneIdFilter(gene_ids), columns = c("gene_id","protein_id","uniprot_id")) |> as.data.frame()
+  pick_uniprot <- function(x){
+    x <- unique(stats::na.omit(x)); if(!length(x)) return(NA_character_)
+    pat <- "^[A-NR-Z][0-9][A-Z0-9]{3}[0-9]$"
+    sp <- x[stringr::str_detect(x, pat)]
+    if (length(sp)) sp[1] else x[1]
+  }
+  prot_map |>
+    dplyr::group_by(gene_id) |>
+    dplyr::summarise(ENSP_first = dplyr::first(na.omit(protein_id)), UniProt_best = pick_uniprot(uniprot_id))
+}
+```
+
+---
+
+## 5. 多対多・重複の扱い（実務パターン）
+
+### 5.1 シンボル重複の集約例
+
+```r
+# counts を Symbol 単位に合算（同一Symbolが複数Geneに跨る場合）
+cts <- SummarizedExperiment::assay(se, "counts")
+syms <- SummarizedExperiment::rowData(se)$SYMBOL
+ok <- !is.na(syms) & syms != ""
+cts_sym <- rowsum(cts[ok, , drop = FALSE], group = syms[ok])
+```
+
+> 代替：平均、最大、信頼度で重み付け等。**ルールはプロトコルに明記**。
+
+### 5.2 UniProtの集約ルール例
+
+* Swiss-Prot（レビュー済）を優先
+* canonical のみ（必要なら UniProtから canonical フラグを取得）
+* もしくは**全アイソフォーム**で集合演算（例：ドメイン被覆率を最大化）
+
+---
+
+## 6. 追加：オンライン同定（任意）
+
+ネット接続が許される環境では、**UniProt REST** や **biomaRt** を直接叩くワークフローも可能です（ただし版固定が難しい）。
+
+```r
+# biomaRt 例：Ensembl gene → UniProt
+# (環境によりSSL/プロキシ設定が必要な場合あり)
+if (requireNamespace("biomaRt", quietly = TRUE)) {
+  library(biomaRt)
+  ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+  bm <- getBM(
+    attributes = c("ensembl_gene_id","hgnc_symbol","entrezgene_id","uniprotswissprot"),
+    filters = "ensembl_gene_id",
+    values = ensg,
+    mart = ensembl
+  )
+  head(bm)
+}
+```
+
+> **実務では** EnsDb/OrgDb を**基本（オフライン再現性）**とし、RESTは**補完**にとどめることを推奨。
+
+---
+
+## 7. 演習課題（チェックリスト）
+
+1. airway に **SYMBOL/ENTREZ/biotype/染色体/遺伝子長** を付与し、`rowData` を整備せよ。
+2. 上記を関数 `annotate_genes()` に一般化し、（任意サブセットでも良いので）**検証表**を作成せよ（手動スポットチェックを含む）。
+3. Gene→Protein 対応を取得し、**UniProtベース**の表を作成。**tie-break ルール**を明記して説明せよ。
+4. SYMBOL重複行の集約（和/平均/最大のいずれか）を実装し、**集約前後でサンプル別総カウントがどう変わるか**を確認せよ。
+5. 遺伝子長から **TPM** を試算し、既存の正規化量（例：DESeq2の正規化カウント）と**相関**を確認せよ。
+
+---
+
+## 8. 付録：典型的な落とし穴と対策早見表
+
+| 落とし穴                | 症状                 | 原因          | 速攻の対策                                     |
+| ------------------- | ------------------ | ----------- | ----------------------------------------- |
+| 版差（Ensembl/UniProt） | クロス参照が取れない         | 取得時期が異なる    | AnnotationHubの**IDと日付を記録**、同じIDで固定        |
+| 旧シンボル               | NA/ミスマッチ           | 別名・非承認名     | HGNChelperで**正規化**してから照合                  |
+| 多対多                 | 行が爆発・重複            | アイソフォーム多数   | **tie-break**（Swiss-Prot優先等）を文書化          |
+| アセンブリ差              | 染色体/座標が合わない        | GRCh37/38混在 | EnsDbは**GRCh38指定**で統一                     |
+| 粒度の混在               | geneとtranscriptが混在 | 前処理設計不足     | \*\*粒度（gene/transcript/protein）\*\*を最初に固定 |
+
+---
+
+## 9. 参考メモ（実装運用）
+
+* EnsDbのキャッシュは `tools::R_user_dir("AnnotationHub","cache")`（環境により異なる）に保存。プロジェクトと一緒に**バージョン・IDのメタ**を残す。
+* `BiocManager::snapshotDate()` を用いた**版固定**運用も検討。
+* 学生実習では**小さなベンチマーク表**（10遺伝子程度）を事前に用意し、**期待解**と突き合わせると検収が楽。
+
+---

@@ -1,0 +1,4587 @@
+---
+title: "RNA-seq遺伝子発現変動解析"
+author:
+  - name: "Yusuke Matsui"
+    affiliation: |
+      Biomedical and Health Informatics Unit (BMHI),  
+      Department of Integrated Health Sciences,  
+      Graduate School of Medicine,  
+      Nagoya University, 
+      Systems Biology Division,  
+      Integrated Glycan-Big Data Center (iGDATA),  
+      Institute for Glycobiology Core Research (iGCORE)
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output: 
+  slidy_presentation: 
+    incremental: true
+    keep_md: true
+---
+
+# データの取得
+
+-   フルデータセットは[このリンク](https://nuss.nagoya-u.ac.jp/s/b98K4dPddY4yZDG)からダウンロード
+-   軽量版データセットは[このリンク](https://nuss.nagoya-u.ac.jp/s/ZRc7qRSfBrf2HoR)からダウンロード（主にPosit cloud (旧R studio cloud）ユーザーの人向け）
+-   zip形式なので展開すること
+
+# 環境設定
+
+## Macユーザー向け操作手順
+
+### 1. ホームに `lect_rnaseq` ディレクトリを作成
+
+1.  Finderを開く。
+2.  メニューから「移動」→「ホーム」を選択するか、ショートカットキー `Command + Shift + H` を使ってホームディレクトリに移動。
+3.  ホームディレクトリ内で右クリックして「新規フォルダ」を選択し、名前を `lect_rnaseq` にする。
+
+### 2. ダウンロードした `dataset.zip` を移動して展開
+
+1.  ダウンロードしたファイルが通常「ダウンロード」フォルダに保存されるので、Finderで「ダウンロード」フォルダを開く。
+2.  `dataset.zip` ファイルをクリックしてドラッグし、作成した `lect_rnaseq` ディレクトリに移動。
+3.  `lect_rnaseq` ディレクトリ内で `dataset.zip` をダブルクリックして展開。
+
+### 3. R環境内で `lect_rnaseq` をホームディレクトリに設定
+
+1.  RStudioまたはRコンソールを開く。
+2.  以下のコマンドを実行して、ホームディレクトリに `lect_rnaseq` を設定：
+
+``` r
+setwd("~/lect_rnaseq")
+```
+
+このコマンドを実行すると、作業ディレクトリが `lect_rnaseq` に設定される。
+
+## Windowsユーザー向け操作手順
+
+### 1. ホームに `lect_rnaseq` ディレクトリを作成
+
+1.  エクスプローラーを開く。
+2.  左側の「PC」→「ユーザー」→あなたのユーザー名をクリックし、ホームディレクトリに移動。
+3.  右クリックして「新規作成」→「フォルダー」を選択し、名前を `lect_rnaseq` にする。
+
+### 2. ダウンロードした `dataset.zip` を移動して展開
+
+1.  「ダウンロード」フォルダを開く。
+2.  `dataset.zip` ファイルを右クリックして「切り取り」を選択。
+3.  `lect_rnaseq` フォルダに移動して、右クリックで「貼り付け」を選択。
+4.  `lect_rnaseq` フォルダ内で `dataset.zip` を右クリックし、「すべて展開」を選択して展開。
+
+### 3. R環境内で `lect_rnaseq` をホームディレクトリに設定
+
+1.  RStudioまたはRコンソールを開く。
+2.  以下のコマンドを実行して、ホームディレクトリに `lect_rnaseq` を設定：
+
+``` r
+setwd("C:/Users/あなたのユーザー名/lect_rnaseq")
+```
+
+`"あなたのユーザー名"` を実際のユーザー名に置き換える。
+
+## Posit Cloudでの操作手順
+
+### 1. `lect_rnaseq` ディレクトリの作成
+
+Posit Cloudのファイルパネル内でフォルダを作成する手順。
+
+1.  Posit CloudのRStudioインターフェースが表示されたら、右下の **Files** タブをクリック。
+2.  右上の「New Folder」ボタンをクリックし、新しいフォルダの名前を `lect_rnaseq` として作成。
+
+### 2. `dataset.zip` を移動して展開
+
+1.  **Files** タブで、上記で作成した `lect_rnaseq` フォルダに移動。
+2.  右上の「Upload」ボタンをクリックして、ローカルコンピュータからダウンロードした `dataset.zip` を選択してアップロード。
+3.  アップロード後、**Files** タブ内で `dataset_light.zip` をクリックして展開。
+
+### 3. R環境で `lect_rnaseq` をワーキングディレクトリに設定
+
+1.  RStudioの **Console** に以下のコマンドを入力して、作成した `lect_rnaseq` フォルダをワーキングディレクトリに設定：
+
+``` r
+setwd("lect_rnaseq")
+```
+
+# R studioの使用方法
+
+-   Positの[チートシート](https://rstudio.github.io/cheatsheets/translations/japanese/rstudio-ide_ja.pdf)を参考
+-   その他、[さまざまなチートシート](https://posit.co/resources/cheatsheets/)があるので、初学者の人はこちらのリンクから資料を参考に独学すると良い
+
+# R studio内のシェルコマンド入力方法
+
+-   何度かシェルコマンドが出てくるが、その入力方法を述べる
+
+## Terminalの表示方法
+
+-   RStudioのTerminalを表示するには、以下の手順に従う：
+
+1.  **RStudioを開く**：RStudioを起動。
+2.  **Terminalタブを選択**：画面の右下にある「**Console**」「**Terminal**」などのタブの中から「**Terminal**」タブをクリック。もしタブが表示されていない場合は、メニューから `Tools -> Terminal -> New Terminal` を選択。
+3.  **Terminalウィンドウが開く**：RStudio内にTerminalウィンドウが表示され、シェルコマンドを入力できる状態になる。
+
+## RStudio Terminalの活用方法
+
+-   **システム操作**：ファイルの操作（コピー、移動、削除）やソフトウェアのインストール、パッケージ管理など、RStudio内でシステムの操作が可能。
+-   **シェルスクリプトの実行**：`bash`や`zsh`などのシェルスクリプトを実行できます。データの準備やファイル操作の自動化に便利。
+-   **Rスクリプトの外部実行**：複雑なRスクリプトを外部から実行する際に利用できます。これにより、タスクをバックグラウンドで実行しやすくなる。
+
+## MacとWindowsの違い
+
+-   **Mac**：標準のTerminalは`bash`または`zsh`が使用されています。`ls`や`cd`などのUnix系コマンドが標準で使える。
+-   **Windows**：RStudioのTerminalではPowerShellやGit Bashが使われることが多いです。Windows特有のコマンド（`dir`など）や、Git Bashが提供するUnix系コマンド（`ls`, `cd`など）が利用できる。
+
+# 本講義で用いる主な解析コード全体
+
+-   ファイル操作、ディレクトリ移動のためのシェルコマンド
+
+``` shell
+# ホームディレクトリに移動
+cd 
+
+# lect_rnaseqディレクトリに移動
+cd ~/lect_rnaseq
+
+# datasetディレクトリに移動
+cd dataset
+
+# dataset内のファイルをリスト
+ls -lh
+
+# gene_exprsディレクトリ内のファイルをリスト
+ls -lh gene_exprs
+
+# meta_info.tsvの最初の5行を表示
+head -n5 meta_info.tsv
+
+# annotation_info.tsvの最初の5行を表示
+head -n5 annotation_info.tsv
+
+# sample_01_counts.tsvの最初の5行を表示
+head -n5 gene_exprs/sample_01_counts.tsv
+
+# gene_sets.gmtの内容を表示
+cat gene_sets.gmt
+```
+
+-   主な解析に用いるRコード
+
+``` r
+############################
+##パッケージ準備と読み込み##
+############################
+
+# 必要なパッケージをインストール
+install.packages("BiocManager")  # Bioconductor用パッケージのインストール
+BiocManager::install(c("edgeR", "limma", "SummarizedExperiment", "fgsea", "clusterProfiler", "org.Hs.eg.db"))  # Bioconductorパッケージ
+install.packages(c("data.table", "enrichR"))  # CRANパッケージ
+
+# 必要なパッケージをロード
+library(edgeR)                  # 遺伝子発現データ解析用ライブラリ
+library(limma)                  # 発現変動解析用ライブラリ
+library(SummarizedExperiment)   # 生物学的実験データの要約用ライブラリ
+library(data.table)             # 高速データ操作用ライブラリ
+library(enrichR)                # enrichR解析用ライブラリ
+library(fgsea)                  # GSEA解析用ライブラリ
+library(clusterProfiler)         # 遺伝子セットアノテーション解析用ライブラリ
+library(org.Hs.eg.db)            # ヒトのアノテーションデータベース
+
+
+##############
+##データ準備##
+##############
+
+# データの読み込み
+gexpr <- fread("dataset/gexpr_mat_entrez_annotated.tsv", header = TRUE, data.table = FALSE)  # 遺伝子発現データ
+meta_info <- fread("dataset/meta_info.tsv", data.table = FALSE)[,-1]  # メタ情報データ
+annotation_info <- fread("dataset/annotation_info.tsv", data.table = FALSE)  # アノテーション情報
+
+# 行名と列名の設定
+rownames(meta_info) <- meta_info$rep_id                  # メタ情報の行名設定
+rownames(annotation_info) <- annotation_info$entrez_id   # アノテーション情報の行名設定
+
+# HGNCアノテーションの取得と結合
+
+hgnc_annotation <- fread("https://g-a8b222.dd271.03c0.data.globus.org/pub/databases/genenames/hgnc/tsv/locus_types/gene_with_protein_product.txt", data.table = FALSE)
+idx_match <- match(annotation_info$entrez_id, hgnc_annotation$entrez_id)  # アノテーションのエントレズIDをマッチング
+merge_annotation <- cbind(annotation_info, symbol = hgnc_annotation$symbol[idx_match])  # アノテーションにシンボルを追加
+any(duplicated(hgnc_annotation$entrez_id))  # 重複チェック
+any(duplicated(annotation_info$entrez_id))  # 重複チェック
+
+
+####################
+##オブジェクト作成##
+####################
+
+# DGEListオブジェクトの作成
+
+dge <- DGEList(counts = gexpr, samples = meta_info, group = meta_info$group, genes = merge_annotation)
+
+# ライブラリサイズ補正
+
+dge <- calcNormFactors(dge, method = "TMM")  # ライブラリサイズの正規化
+
+
+########################
+##変動解析の準備と実行##
+########################
+
+# デザイン行列の作成
+## グループとデザインマトリックスの設定
+
+group <- factor(meta_info$group)            # グループ情報を因子として作成
+design <- model.matrix(~0 + group)          # デザインマトリックスの作成
+
+# 分散補正
+## voomによる正規化と線形モデルのフィッティング
+
+vfit <- voom(dge, design = design)
+
+# 線形モデル当てはめ
+
+fit <- lmFit(vfit)
+
+# 差の計算（コントラスト行列の作成と適用）
+
+contr <- makeContrasts(contrasts = c("group2-group1", "group3-group1", "group2-group1"), levels = colnames(design))
+fit <- contrasts.fit(fit = fit, contrasts = contr)
+
+# 経験ベイズに基づく分散の縮小推定
+
+fit <- eBayes(fit)
+
+# 発現変動解析結果に対するポストホック補正と結果のフィルタリング
+
+result <- topTable(fit, coef = "group2-group1", adjust.method = "BH", sort.by = "P", number = Inf)
+results <- decideTests(fit, method = "separate", adjust.method = "BH", p.value = 0.05)
+
+
+####################
+##遺伝子セット解析##
+####################
+
+# ORA
+
+# ORA
+
+## enrichRによる遺伝子リストの機能解析
+
+## 使用するデータベース
+dbs <- c("GO_Biological_Process_2021", "KEGG_2021_Human")  
+
+## limmaによる変動解析の結果
+dt <- decideTests(fit, method="separate", adjust.method="BH", p.value=0.05, lfc=0)
+
+## group2-group1のコントラストで増加（１）、現象(-1)しているもの抽出
+up_geneid <- rownames(dt)[dt[,"group2-group1"]==1]
+down_geneid <- rownames(dt)[dt[,"group2-group1"]==-1]
+
+## 遺伝子シンボルへの変換
+up_gene <- dge$genes$symbol[match(up_geneid,dge$genes$entrez_id)]
+down_gene <- dge$genes$symbol[match(down_geneid,dge$genes$entrez_id)]
+
+## enrichRによる解析
+enrichment_up_results <- enrichr(up_gene, dbs)
+enrichment_down_results <- enrichr(down_gene, dbs)
+
+## 結果の視覚化
+plotEnrich(enrichment_up_results$GO_Biological_Process_2021)
+plotEnrich(enrichment_down_results$GO_Biological_Process_2021)
+
+
+# GSEA
+
+## fgseaによるGSEA解析
+
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+gene_list <- result$t  # 発現変動解析の結果から遺伝子リストを作成
+names(gene_list) <- result$symbol  # 遺伝子シンボルを設定
+gene_list <- sort(gene_list, decreasing = TRUE)  # 遺伝子リストを降順に並べ替え
+fgsea_result <- fgseaSimple(pathways = gmt, stats = gene_list, nperm = 1000)  # fgseaによる解析
+
+## 結果のフィルタリング
+fgsea_pos <- fgsea_result %>% filter(NES > 0 & pval < 0.05)  # 上昇方向にエンリッチされたセット
+fgsea_neg <- fgsea_result %>% filter(NES < 0 & pval < 0.05)  # 減少方向にエンリッチされたセット
+
+# clusterProfilerによるKEGGとGO解析
+
+## up-regulated遺伝子のKEGG解析
+kegg_up <- enrichKEGG(gene = up_geneid, organism = "hsa", keyType = "kegg")
+head(kegg_up)  # 結果を表示
+
+## up-regulated遺伝子のGO解析（生物学的プロセス）
+go_up <- enrichGO(gene = up_geneid, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP")
+head(go_up)  # 結果を表示
+
+## 結果の視覚化
+dotplot(go_up)
+dotplot(kegg_up)
+
+# その他の遺伝子セット解析
+##Cameraを用いた解析
+
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+index <- ids2indices(gmt, names(gene_list))  # Reactomeの遺伝子セットのインデックス作成
+camera_result <- camera(vfit, index, design)  # cameraを用いた遺伝子セットの解析
+
+## roastを用いた解析
+# roastの実行 (voomでフィットしたモデル, index = 遺伝子セットのインデックス, design = デザイン行列)
+roast_result <- roast(vfit$E, index, design, contrast = contrast_matrix)
+```
+
+# データの取得
+
+# データの準備と読み込み
+
+## 入力データの種類
+
+-   必要な情報は以下の三つである（大抵は別々に処理して結合する必要性）
+
+    1.  定量値（カウント値）
+
+    2.  メタ情報（サンプルの割り付け条件や属性情報）
+
+    3.  アノテーション情報（遺伝子IDや関連した補足情報）
+
+## 遺伝子発現量データ
+
+-   定量値の情報
+
+-   一般的に、行方向には転写物（または遺伝子）、列方向にはサンプルが並んだ表形式であることが多い
+
+-   各行にはアノテーション情報と紐づけるためのID、各列にはメタ情報と紐づけるためのIDが一つ以上記載
+
+-   典型的には以下のような形をしている
+
+    | gene ID    | A001 | A002 | B001 | B002 |
+    |------------|------|------|------|------|
+    | ENSG111111 | 10   | 34   | 54   | 66   |
+    | ENSG222222 | 3    | 53   | 2    | 1    |
+    | ENSG333333 | 5    | 2    | 33   | 54   |
+    | ENSG444444 | 100  | 23   | 36   | 33   |
+
+## メタ情報
+
+-   サンプルに関わる情報
+
+-   典型的には以下のような情報
+
+-   定量値とは別ファイルとして保管される場合と定量値にヘッダー情報として含まれるの場合の両方がある
+
+| Sample name | Condition | Sex  |
+|-------------|-----------|------|
+| A001        | Treat     | Male |
+| A002        | Treat     | Male |
+| B001        | Baseline  | Male |
+| B002        | Baseline  | Male |
+
+## アノテーション情報
+
+-   転写物や遺伝子に関わる補助情報のデータ
+
+-   転写物や遺伝子にはユニークなIDを管理するデータベースがある
+
+    -   例えばENSEMBLとRefseqでは、それぞれ独自のIDを有している
+
+-   さらに遺伝子名と遺伝子シンボルを管理するデータベースもある
+
+    -   例えば [HUGO Gene Nomenclature Committee](https://www.genenames.org/) (通称：HGNC)
+
+-   多種にわたるデータベースを相互参照して、どのデータベースからでも紐づけられる仕組みが整っているが、それを紐づける処理は自分で行う必要
+
+    -   Biomartが代表的であり、RではBiomaRtパッケージがある
+
+    -   特定の解析ソフトウェアでは自動でID認識をして対応づけを行うものもある
+
+-   ただし、１体１対応が保証されているとは限らないため、注意が必要
+
+    -   例えば、IDと遺伝子シンボルは１対多の対応であったり、遺伝子シンボルが割り振られないIDも存在する
+
+| ENSENBL ID | Refseq ID | Symbol |
+|------------|-----------|--------|
+| ENSG001    | NM001     | TP53   |
+| ENSG002    | NM011     |        |
+| ENSG003    | NM111     | FN1    |
+| ENSG004    | NM222     | TTN    |
+
+## 入力データのファイル保存形式
+
+-   ファイル保存形態は必ずしも統一されておらず、都度対処が必要
+
+-   大きくは以下の二つ場合がある
+
+    1.  複数サンプル（または全サンプル）が１ファイルにまとめて保存
+
+    2.  サンプルごとに分割されたファイルとして保存
+
+-   先ほどの定量値の例は、複数サンプルが一つのファイルに含まれているため、1に相当する
+
+-   一方、２のケースは以下のような場合である
+
+    -   dataディレクトリにサンプル名を識別できるファイル名で定量値データが保存
+
+        -   data/A001.tsv
+
+        -   data/A002.tsv
+
+        -   data/B001.tsv
+
+        -   data/B002.tsv
+
+-   それぞれのファイルは以下の形式
+
+data/A001.tsv
+
+| Gene ID | Count | Length |
+|---------|-------|--------|
+| ENSG001 | 10    | 1200   |
+| ENSG002 | 3     | 500    |
+| ENSG003 | 5     | 300    |
+| ENSG004 | 100   | 3000   |
+
+data/A002.tsv
+
+| Gene ID | Count | Length |
+|---------|-------|--------|
+| ENSG001 | 34    | 1200   |
+| ENSG002 | 53    | 500    |
+| ENSG003 | 2     | 300    |
+| ENSG004 | 23    | 3000   |
+
+data/B001.tsv
+
+| Gene ID | Count | Length |
+|---------|-------|--------|
+| ENSG001 | 54    | 1200   |
+| ENSG002 | 2     | 500    |
+| ENSG003 | 33    | 300    |
+| ENSG004 | 36    | 3000   |
+
+data/B002.tsv
+
+| Gene ID | Count | Length |
+|---------|-------|--------|
+| ENSG001 | 66    | 1200   |
+| ENSG002 | 1     | 500    |
+| ENSG003 | 54    | 300    |
+| ENSG004 | 33    | 3000   |
+
+-   サンプルごとにデータファイルが存在
+
+    -   定量値の補助情報も記載
+
+        -   上記の例でLengthは遺伝子の長さ
+
+-   データファイルの形式１と２で後のデータ読み込み方法が異なる
+
+# 演習１　データファイルを探す
+
+-   実際にデータを読み込む演習を行う
+
+-   データは以下のコマンドで適当なディレクトリに保存すること
+
+-   どこに、どのような形式によって保存されているのかをまず調べるところから始める
+
+-   ここでは、シェルコマンドを用いて調べる方法を示す
+
+-   あるディレクトリに存在するファイルおよびディレクトリをリストするための`ls`コマンドを用いる
+
+```{bash}
+ls -lh dataset
+```
+
+-   datasetディレクトリには以下のファイルが存在することがわかる
+
+    -   annotation_info.tsv
+
+    -   meta_info.tsv
+
+    -   gexpr_mat_entrez_annotated.tsv
+
+    -   gene_exprsディレクトリ
+
+-   さらにgene_exprsディレクトリを調べるには
+
+```{bash}
+ls -lh dataset/gene_exprs
+```
+
+-   あるいは、`—recursive`オプションをつければディレクトリを再帰的にリストできる
+
+```{bash}
+ls -lh --recursive dataset
+```
+
+# 演習２　データファイルの形式を調べる
+
+-   データファイルの形式を調べるためには、ファイルの一部のみを表示するのが有用
+
+-   シェルコマンドの`head`を使用する
+
+    -   head -n [file]でfileの先頭行からn行だけを表示させることができる
+
+-   例えば、gexpr_mat_entrez_annotated.tsvの形式がどうなっているのかを調べてみよう
+
+```{bash}
+head -n5 dataset/gexpr_mat_entrez_annotated.tsv 
+```
+
+-   以下の点について最低限、確認すべきである
+
+    -   区切り文字は何か
+
+        -   タブ区切り、カンマ区切り、スペース区切り
+
+    -   ヘッダー情報は存在するか否か
+
+    -   行と列にどのような情報が含まれるのか
+
+    -   行あるいは列の名前は含まれているのか
+
+    -   データ型は何か
+
+        -   数値型、文字型など
+
+    -   不自然な文字列はないか
+
+        など
+
+-   これらのデータの形式について正確に理解することで、どのような方法でR環境に読み込むかが大凡決まる
+
+-   もし、標準出力に表示される情報では判断がつきにくい場合には、新たにファイルを生成しておいて、それをメモ帳や表計算ソフトで開いて調べることも有効である
+
+-   以下の例は、headで最初の5行を含む新たなファイルgexprs_entrez_annotated_test.tsvを作成している
+
+```{bash}
+head -n5 dataset/gexpr_mat_entrez_annotated.tsv > dataset/gexpr_mat_entrez_annotated_test.tsv
+```
+
+# 演習３　データファイルの形式を調べる（２）
+
+-   他のデータファイルの形式も確認しておこう
+
+meta_info.tsv
+
+```{bash}
+head -n5 dataset/meta_info.tsv
+```
+
+annotation_info.tsv
+
+```{bash}
+head -n5 dataset/annotation_info.tsv
+```
+
+-   先ほどの発現量データファイルはすべてのサンプルが一つのファイルに収められている形式であった
+
+-   一方、dataset/gene_exprsディレクトリには、サンプルごとに発現量データが分割されたファイルがそれぞれ収められている
+
+    -   sample\_[xx]\_counts.tsv
+
+    -   多くの場合、系統的な命名規則に従った形でファイル名が作成
+
+    -   今回は、ファイル名にサンプルの識別番号が含まれていることがわかる（各ファイルの中身にはサンプルの識別子は含まれていない）
+
+    -   サンプル識別子が01のsample_01_counts.tsvの形式を調べてみよう
+
+sample_01_counts.tsv
+
+```{bash}
+head -n5 dataset/gene_exprs/sample_01_counts.tsv
+```
+
+-   ファイルの中身には１列目に遺伝子の識別子、２列目に定量値（カウント値）が含まれている
+
+-   この形式がサンプル識別子に対応するすべてのファイルで踏襲されている
+
+-   例えば、サンプル識別子が20のサンプルsample_20_counts.tsvでも同じである
+
+sample_09_counts.tsv
+
+```{bash}
+head -n5 dataset/gene_exprs/sample_09_counts.tsv
+```
+
+-   見てわかるように1列目の順番はファイル間で揃えられていることが多い（100%ではない）
+
+Tips: 今回の例に限らず、ファイル名の命名規則、内容のフォーマットを機械的にしておくことで後々の処理を自動化しやすくなるので、データを保存する際は意識すると良い
+
+-   以下に基本的なシェルコマンド表を載せておく。
+
+| コマンド  | 説明                                              | 使用例                                                                  |
+|------------------|----------------------|---------------------------------|
+| `pwd`     | 現在のディレクトリ（作業場所）のパスを表示        | `pwd`                                                                   |
+| `ls`      | ディレクトリ内のファイルやフォルダの一覧を表示    | `ls` または `ls -lh`                                                    |
+| `cd`      | ディレクトリを移動                                | `cd /path/to/directory`                                                 |
+| `cd ..`   | 一つ上の階層に移動                                | `cd ..`                                                                 |
+| `mkdir`   | 新しいディレクトリを作成                          | `mkdir new_folder`                                                      |
+| `rmdir`   | 空のディレクトリを削除                            | `rmdir old_folder`                                                      |
+| `rm -r`   | ディレクトリごと削除（中身があっても削除）        | `rm -r folder_to_delete`                                                |
+| `touch`   | 空のファイルを作成                                | `touch newfile.txt`                                                     |
+| `cp`      | ファイルやディレクトリをコピー                    | `cp file.txt /path/to/destination/`                                     |
+| `mv`      | ファイルやディレクトリを移動または名前を変更      | `mv oldname.txt newname.txt` または `mv file.txt /path/to/destination/` |
+| `rm`      | ファイルを削除                                    | `rm file.txt`                                                           |
+| `cat`     | ファイルの内容を表示                              | `cat file.txt`                                                          |
+| `less`    | ファイルの内容をページごとに表示                  | `less file.txt`                                                         |
+| `head`    | ファイルの先頭部分を表示                          | `head -n 10 file.txt` （最初の10行）                                    |
+| `tail`    | ファイルの末尾部分を表示                          | `tail -n 10 file.txt` （最後の10行）                                    |
+| `wget`    | URLからファイルをダウンロード                     | `wget http://example.com/file.zip`                                      |
+| `curl -O` | URLからファイルをダウンロード（ファイル名を保存） | `curl -O http://example.com/file.zip`                                   |
+| `find`    | ファイルやディレクトリを検索                      | `find /path/to/search -name "filename"`                                 |
+| `du -h`   | ディレクトリやファイルのサイズを表示              | `du -h`                                                                 |
+| `df -h`   | ディスクの使用状況を表示                          | `df -h`                                                                 |
+
+# 演習４　遺伝子発現量データの読み込み
+
+-   データファイルのある場所と、それぞれのファイルに含まれているデータの形式を確認した後は、いよいよRに読み込んで、処理の準備を始めていく
+
+-   データの読み込み関数としてRにはいくつもの関数が用意されているが、デフォルトで組みまれている関数は読み書き速度が非常に遅い。そこで、読み書きが非常に高速なパッケージの一つであるdata.tableパッケージの`fread()`関数を使用する
+
+-   もしインストールされていないのであれば（以下のコードでエラーが表示されるのであれば）、まずインストールする（コードはコメントアウトしているので、"\#"を消して実行すればよい
+
+```{r}
+# install.packages("data.table")
+library(data.table)
+```
+
+-   まずは、dataset/gene_expr_entrez_annotated.tsvを読み込んでみよう
+
+-   データの形式はすでに確認した通り、１行目にはサンプル識別子を表すヘッダー情報があり、１列目には遺伝子識別子が含まれている
+
+-   これをデータフレームとして読み込み、列名にサンプル識別子、行名に遺伝子識別子、各要素に定量値（カウント）が含まれるオブジェクトにする
+
+-   freadのシンプルな使い方を示す
+
+```{r}
+gexpr <- fread("dataset/gexpr_mat_entrez_annotated.tsv",header = TRUE, data.table = FALSE)
+head(gexpr)
+```
+
+-   よく見ると１列目もデータとして読み込まれているらしい。fread()には自動で行名を判別する機能はないのでfread()関数のオプションを工夫してマニュアルで行う
+
+-   ポイントは、読み込む列を指定する`select=`オプションと、逆に読み込まない列を指定する`drop=`オプションを組み合わせて使うことである
+
+```{r}
+rname <- fread("dataset/gexpr_mat_entrez_annotated.tsv",header = TRUE, select = 1, data.table = FALSE)
+gexpr <- fread("dataset/gexpr_mat_entrez_annotated.tsv",header = TRUE, drop = 1, data.table = FALSE)
+
+
+```
+
+-   実際にそれぞれのオブジェクト内容を見てみる
+
+```{r}
+head(rname)
+head(gexpr)
+```
+
+-   それぞれが、データフレーム形式となっている
+
+-   rnameの1列目をgexprの行名に設定する
+
+```{r}
+rownames(gexpr) <- rname[,1]
+head(gexpr)
+```
+
+# 演習５　遺伝子発現量データの読み込み（２）
+
+-   ではサンプルごとに分割されたファイルを読み込む場合はどうするのか？（その形式しかない場合もある）
+
+    1.  上のプロセスをforループで繰り返してそれぞれを読み込み、一つにまとめる
+
+    2.  edgeRパッケージの`readDGE()`関数を使用する（1の処理を関数化したものと考えれば良い）
+
+```{r}
+library(edgeR)
+files <- list.files("dataset/gene_exprs/",full.names = TRUE)
+gexpr2 <- readDGE(files, columns=c(1,2))
+```
+
+## オブジェクトの構造をstr()で調べる
+
+-   readDGEは二つの情報をリスト形式で返す関数である
+
+-   Rでオブジェクトの中身を調べる場合には`str()`関数が便利である
+
+    -   見方についてはR言語の知識が必要であるが、オブジェクトを自在に扱うためには慣れておく方が良い
+
+```{r}
+str(gexpr2)
+```
+
+## str()の標準出力結果からオブジェクトの構造を理解する
+
+-   標準出力された内容はリスト構造を階層的に表している
+
+-   gexpr2オブジェクトは以下のように説明される
+
+    -   DGEListクラスである
+
+    -   1つのスロット（.Data）を持ち、2つの要素を含んでいる
+
+        1.  サンプル情報を格納する data.frame
+
+        2.  カウントデータを格納する数値行列
+
+## オブジェクト構造の中身も理解する
+
+さらに詳細に見ていくと、以下のように説明されている
+
+-   サンプル情報 (data.frame, 30観測値, 4変数)
+
+    -   files: 各サンプルに対応するファイルパスを格納する文字ベクトル（例："dataset/gene_exprs//sample_01_counts.tsv", "dataset/gene_exprs//sample_02_counts.tsv" など）。
+
+    -   group: 各サンプルのグループ分類を示す因子ベクトル。この例では、すべてのサンプルがグループ「1」に属している。
+
+    -   lib.size: 各サンプルのライブラリサイズ（リードの総数）を示す数値ベクトル。
+
+    -   norm.factors: 正規化係数を保持する数値ベクトル。初期状態ではすべて 1 に設定されている（スケーリングが行われていない状態）。
+
+-   2\. カウントデータ (num[1:918, 1:30])
+
+    -   918行（遺伝子）×30列（サンプル）のマトリックス。各要素は、特定の遺伝子とサンプルの組み合わせにおける発現カウントを表す。
+
+    -   Tags: 行に対応する遺伝子IDの文字ベクトル（例："424037187", "209977002" など）。
+
+    -   Samples: 列に対応するサンプル名の文字ベクトル。
+
+## 実際にオブジェクトの中身を確認する
+
+-   実際にリスト要素の名前を`names()`関数で調べると、二つの要素名が確認できる
+
+```{r}
+names(gexpr2)
+```
+
+-   リスト構造であるので、`$` を用いて各要素名でそれぞれの要素にアクセスすることができる
+
+-   最初の５行のみをそれぞれ示す
+
+```{r}
+head(gexpr2$samples)
+```
+
+```{r}
+head(gexpr2$counts)
+```
+
+## 引数を調べて設定をカスタマイズする
+
+-   `gexpr2$counts` を標準出力して気づくように、サンプル名はファイルのパス（つまり、現在のディレクトリからファイルに至る階層＋ファイル名）になっている
+
+-   一般的に、関数のデフォルト設定は概ね事足りるが、慣れると不満が多い。
+
+-   その場合は関数の引数をヘルプ関数`?`で調べて、カスタマイズする
+
+    -   それでも不十分な場合は、出力結果を自身で（他の関数など用いて）整形する
+
+-   `?readDGE` でヘルプを見ると以下のように記述されている（抜粋）
+
+```{r}
+?readDGE
+```
+
+## readDGE()ヘルプの記述内容
+
+### Description
+
+Reads and merges a set of text files containing gene expression counts.
+
+### Usage
+
+```{r,eval = FALSE}
+readDGE(files, path=NULL, columns=c(1,2), group=NULL, labels=NULL, ...)
+```
+
+### Arguments
+
+-   **files**:\
+    A character vector of filenames, or a `data.frame` of sample information containing a column called `files`.
+
+-   **path**:\
+    A character string giving the directory containing the files. Defaults to the current working directory.
+
+-   **columns**:\
+    A numeric vector stating which columns of the input files contain the gene names and counts respectively.
+
+-   **group**:\
+    An optional vector or factor indicating the experimental group to which each file belongs.
+
+-   **labels**:\
+    A character vector giving short names to associate with the files. Defaults to the file names.
+
+-   **...**:\
+    Other arguments are passed to `read.delim`.
+
+## readDGE()の引数をカスタマイズして列名を読みやすくする
+
+-   `labels=`というオプションにファイル名のラベルを指定できると書かれているのでこれを用いると以下のようにして、列名を整えることができる
+
+-   まずは、`labels=` 引数に渡す列名の文字ベクトル`label`を作成
+
+    1.  ファイル名をリストして、".tsv"を除外して作成
+
+        -   順序は間違える恐れはないのでロバストな方法
+
+    2.  paste()などの文字生成関数で作成する場合
+
+        -   実際のファイルとの対応関係を間違わないように注意が必要
+
+-   `label`を`labels=` 引数に渡すようにして、再度`readDGE()`を実行
+
+## 列名の作成
+
+-   ファイル読み込みの際に用いた`list.files()`を用いる
+
+    -   `full.names=` 引数はファイルまでの（相対）パスを含むか否か（TRUE/FALSE）
+
+    -   ファイル読み込み時には`full.names = TRUE`にしたが、デフォルトでは`full.names = FALSE`
+
+        -   デフォルトの値を用いる場合は引数を特にしなくともよい
+
+    -   今回は、ファイル名のみを取得したいので`full.names = FALSE` で読み込む
+
+    -   以下の二つは同じ意味である
+
+```{r}
+label <- list.files("dataset/gene_exprs/")
+label <- list.files("dataset/gene_exprs/",full.names = FALSE)
+label
+```
+
+## 文字列操作
+
+-   labelには今の状態で、".tsv"という文字が含まれており、見栄えが悪く、除去したい
+
+-   さらに、"\_counts"という文字列も不要
+
+-   文字列操作によって".tsv"と"\_counts"を""に一括置換することで除去する
+
+    -   `gsub()`またはstringrパッケージ`str_replace_all()` を用いて処理
+
+```{r}
+library(stringr)
+label <- str_replace_all(label,".tsv","")
+label <- str_replace_all(label,"_counts","")
+label
+```
+
+-   **正規表現**を用いれば以下のように実行しても同じ結果が得られる
+
+```{r,eval=FALSE}
+label <- str_replace_all(label,".tsv|_counts","")
+```
+
+-   得られたラベルを`readDGE()`の`labels=`に代入して再実行
+
+```{r}
+library(edgeR)
+files <- list.files("dataset/gene_exprs/",full.names = TRUE)
+gexpr2 <- readDGE(files, columns=c(1,2),labels = label)
+head(gexpr2$counts)
+```
+
+## 文字列操作に習熟しよう
+
+-   文字列を操作する局面は、膨大なアノテーション情報やメタ情報を扱うバイオインフォマティクス解析において頻繁に遭遇するものの一つである
+
+-   文字列操作はRインストール時にデフォルトで使用可能なbaseパッケージの他に、近年では洗練された文字列特化のパッケージstringrもある
+
+    -   stringrの特徴
+
+        -   Rの基本関数を簡素化した形で提供
+
+        -   \*\*正規表現\*\*を強力なサポートしており、操作が簡潔でわかりやすい構文となるように設計
+
+        -   \`tidyverse\`パッケージ群の一部で、データ処理の一環として統一的に使用できる
+
+        -   チートシート参照 (<https://rstudio.github.io/cheatsheets/html/strings.html>)
+
+-   文字列に対して行う操作と関数一覧をbaseパッケージとstringrパッケージの両方でまとめたものを示す
+
+| **操作の種類**       | **Rのデフォルト関数** | **`stringr`の関数**          | **説明**                                                | **例** (基本Rとstringrの違い)                                                                 |
+|--------------|--------------|--------------|--------------|-------------------|
+| **文字列の結合**     | `paste()`             | `str_c()`                    | 複数の文字列を結合し、区切り文字を指定                  | `paste("Hello", "World", sep = " ")` → `str_c("Hello", "World", sep = " ")`                   |
+|                      | `paste0()`            | `str_c()`                    | 区切りなしで文字列を結合                                | `paste0("Hello", "World")` → `str_c("Hello", "World")`                                        |
+| **文字列の分割**     | `strsplit()`          | `str_split()`                | 指定した区切り文字で文字列を分割                        | `strsplit("a,b,c", split = ",")` → `str_split("a,b,c", ",")`                                  |
+| **文字列の長さ取得** | `nchar()`             | `str_length()`               | 文字列の長さを取得                                      | `nchar("Hello")` → `str_length("Hello")`                                                      |
+| **部分文字列の抽出** | `substr()`            | `str_sub()`                  | 指定した範囲の部分文字列を抽出                          | `substr("Hello", 1, 4)` → `str_sub("Hello", 1, 4)`                                            |
+| **文字列の置換**     | `sub()`               | `str_replace()`              | 最初の一致部分を置換                                    | `sub("World", "Everyone", "Hello World")` → `str_replace("Hello World", "World", "Everyone")` |
+|                      | `gsub()`              | `str_replace_all()`          | 全ての一致部分を置換                                    | `gsub("l", "L", "Hello")` → `str_replace_all("Hello", "l", "L")`                              |
+| **文字列の検索**     | `grep()`              | `str_detect()`               | パターンにマッチするかを論理値で返す                    | `grepl("apple", "apple pie")` → `str_detect("apple pie", "apple")`                            |
+| **正規表現検索**     | `gregexpr()`          | `str_locate_all()`           | 正規表現にマッチする全ての位置を返す                    | `gregexpr("a", "banana")` → `str_locate_all("banana", "a")`                                   |
+|                      | `regexpr()`           | `str_locate()`               | 最初の一致部分の位置を返す                              | `regexpr("a", "banana")` → `str_locate("banana", "a")`                                        |
+| **文字列の変換**     | `tolower()`           | `str_to_lower()`             | 文字列をすべて小文字に変換                              | `tolower("HELLO")` → `str_to_lower("HELLO")`                                                  |
+|                      | `toupper()`           | `str_to_upper()`             | 文字列をすべて大文字に変換                              | `toupper("hello")` → `str_to_upper("hello")`                                                  |
+| **空白のトリミング** | `trimws()`            | `str_trim()`                 | 文字列の先頭と末尾の空白を削除                          | `trimws("  Hello  ")` → `str_trim("  Hello  ")`                                               |
+| **書式設定**         | `sprintf()`           | \-                           | `stringr`には対応関数がないが、他のパッケージで対応可能 | `sprintf("Value is %d", 42)` → `str_glue("Value is {42}")`                                    |
+| **ユニーク要素抽出** | `unique()`            | `str_unique()`（存在しない） | `stringr`には`unique`相当の関数がない                   | `unique(c("a", "b", "a"))` → `unique(c("a", "b", "a"))`（基本Rで処理）                        |
+| **文字列の比較**     | `identical()`         | \-                           | `stringr`には厳密な文字列比較関数がない                 | `identical("apple", "apple")` → `identical("apple", "apple")`                                 |
+|                      | `==`                  | \-                           | `stringr`では基本的に`==`で比較                         | `"apple" == "apple"` → `"apple" == "apple"`                                                   |
+
+# 演習７　アノテーション情報の準備
+
+-   次にアノテーション情報の準備を行う
+-   アノテーション情報はそれ自体が複雑なデータである
+-   どのように複雑化というと、転写物または遺伝子を表す方法がとても多様
+    -   転写物名をシンボルで表すのか、識別子（複数存在）で表すのか、あるいは詳細な説明として表すのか等
+-   準備段階で、遺伝子発現データを解析したあとに結果を解釈できるように準備する必要性
+-   作業としては、識別子を主キー（手元のデータと参照先のデータとの間における突合用の識別子）としてマッチングさせ、必要な情報のみを統合していく作業（データベース間の相互参照）
+-   アノテーションの準備方法はいくつかあるが、代表的な方法
+    1.  biomaRtパッケージを用いて変換
+    2.  HGNC
+
+```{r}
+annotation_info <- fread("dataset/annotation_info.tsv",data.table = FALSE)
+head(annotation_info)
+```
+
+-   1列目は不要な情報に見えるので、この段階で除外しておく
+
+    ```{r}
+    annotation_info <- annotation_info[,-1]
+    ```
+
+## HGNCデータベースを用いたID突合
+
+-   HGNC (HUGO Gene Nomenclature Committee)
+
+    -   標準化されたヒト遺伝子名とシンボル（略号）を提供し、国際的な遺伝子命名の統一を図るための委員会。
+
+    -   一貫性のある命名規則を提供することで、遺伝子研究と臨床研究の正確性と効率性を向上。
+
+    -   二つのミッションを有している
+
+        -   ヒト遺伝子に標準的な名前とシンボルを割り当て、混乱を避けるために重複や矛盾がないように管理。
+
+        -   遺伝子シンボルや名前に関するデータベースを管理し、研究者が一貫した用語を使用できるようにする。
+
+    -   遺伝子シンボル命名の方針:
+
+        -   一般的に3～5文字のアルファベットまたは数字の組み合わせで表す
+
+        -   標準化された形式により、遺伝子の特定が容易に行えるようにする
+
+-   データベースのURL:<https://www.genenames.org/>
+
+-   データの取得方法
+
+    -   データのダウンロードして、Rで読み込む
+
+    -   Donwloads --\> Statistics & download filesからテキストファイルをボタンを挿下
+
+        -   タンパク質コーディングする遺伝子名のみであれば、protein-coding geneを挿下
+
+    -   data.tableパッケージのfread()関数には、ファイルパスの他にURLを直接することもできる
+
+        -   URL先のファイルが整形されていない場合はエラーとなる可能性が高いので注意
+
+    -   
+
+```{r}
+hgnc_annotation <- fread("https://g-a8b222.dd271.03c0.data.globus.org/pub/databases/genenames/hgnc/tsv/locus_types/gene_with_protein_product.txt",data.table = FALSE)
+```
+
+-   オブジェクトの構造を調べてみる
+
+```{r}
+str(hgnc_annotation)
+```
+
+-   データフレームつまり表形式（19260行54列）になっていることがわかる
+
+    -   19260のタンパク質をコーディングする遺伝子のアノテーション情報のみ
+
+-   遺伝子識別子が関わる部分は"xx_id"という列名にある
+
+    -   つまり、これらの列間の対応関係がデータベース間における識別子対応関係になっている
+
+    -   対応する識別子がない場合は、空文字""か欠損`NA` になっていることも`str()`標準出力から読み取れる
+
+```{r}
+colnames(hgnc_annotation)[grep("_id",colnames(hgnc_annotation))]
+```
+
+## HGNCに含まれている遺伝子識別子の一覧表
+
+| **ID名**            | **説明**                                                              | **例**                 | **データベースの説明**                                     |
+|----------------|----------------------|----------------|------------------|
+| **hgnc_id**         | HGNCによって割り当てられるヒト遺伝子の一意の識別子。                  | "HGNC:5", "HGNC:24086" | ヒト遺伝子の標準的な名称とシンボルを提供する委員会。       |
+| **entrez_id**       | NCBI Entrez Geneによる一意の遺伝子識別子。                            | 1, 29974               | 遺伝子に関する情報を提供するNCBIのデータベース。           |
+| **ensembl_gene_id** | Ensemblによって付与される遺伝子の一意の識別子。                       | "ENSG00000121410"      | 遺伝子とゲノムに関する広範なデータを提供するデータベース。 |
+| **vega_id**         | VEGA（Vertebrate Genome Annotation）によって付与される遺伝子ID。      | "OTTHUMG00000183507"   | 脊椎動物のゲノムを注釈付けするためのデータベース。         |
+| **ucsc_id**         | UCSCゲノムブラウザによって付与される遺伝子ID。                        | "uc002qsd.5"           | UCSCによるゲノムデータの閲覧と解析のためのブラウザ。       |
+| **ccds_id**         | CCDS（Consensus CDS Project）によって付与されるID。                   | "CCDS12976"            | コーディング領域の一貫性を保つための国際プロジェクト。     |
+| **uniprot_ids**     | UniProtによるタンパク質の一意の識別子。                               | "P04217"               | タンパク質の詳細な情報を提供するデータベース。             |
+| **pubmed_id**       | PubMedに収載されている論文の識別子。                                  | "2591067"              | 生物医学分野の論文の要約を提供するデータベース。           |
+| **mgd_id**          | マウスゲノムデータベース（MGD）による一意の識別子。                   | "MGI:2152878"          | マウスの遺伝子に関する情報を提供するデータベース。         |
+| **rgd_id**          | ラットゲノムデータベース（RGD）による一意の識別子。                   | "RGD:69417"            | ラットの遺伝子に関する情報を提供するデータベース。         |
+| **omim_id**         | OMIM（Online Mendelian Inheritance in Man）によって付与される識別子。 | "138670"               | 遺伝性疾患に関連するヒト遺伝子を扱うデータベース。         |
+| **lsdb**            | Locus-Specific Databaseでのリンク情報やID。                           | "LRG_591"              | 特定の遺伝子座に関するデータベース。                       |
+| **cosmic**          | COSMIC（Catalogue Of Somatic Mutations In Cancer）によるID。          | ""                     | 癌に関連する体細胞変異を収集するデータベース。             |
+| **orphanet**        | OrphanetによるID。                                                    | "410627"               | 希少疾患と孤児薬に関する情報を提供するデータベース。       |
+| **pseudogene.org**  | Pseudogene.orgによるID。                                              | ""                     | 疑似遺伝子に関する情報を提供するデータベース。             |
+| **horde_id**        | HORDE（Human Olfactory Receptor Data Explorer）によるID。             | ""                     | ヒトの嗅覚受容体遺伝子に関するデータベース。               |
+| **gencc**           | GenCC（Gene Curation Coalition）によるID。                            | "HGNC:7"               | 臨床的に重要な遺伝子の注釈を提供するデータベース。         |
+
+## HGNCに含まれている遺伝子シンボルとエイリアス（別名）
+
+-   また、遺伝子シンボルはsymbol列、遺伝子の正式名称は`name`列にある
+
+-   遺伝子シンボルには、同義語`alias_symbol`もあることに注意
+
+    -   **異なる研究やデータベースで使用された別名**:
+
+        -   遺伝子には長い歴史の中で複数の名前が付けられている
+
+        -   新しい研究や発見により遺伝子名が変更されることがあろ、過去に使用されていた名前がエイリアスとして登録される
+
+    -   **略称や別の記号**: 正式な遺伝子名が長い場合や、特定の文脈で使用される省略形がある場合、その短い形式がエイリアスとして使われる
+
+    -   例
+
+        -   正式名: **A1CF**
+
+        -   エイリアス: **ACF**, **ASP**, **APOBEC1CF**
+
+## 遺伝子識別子間の突合の必要性
+
+-   遺伝子識別子を対応づける目的は主に二つある
+
+    1.  人が判読できるようにするため
+
+        -   遺伝子識別子は人間が判読できない記号（例：entrezは整数値）
+
+        -   遺伝子シンボル(symbol)または名前(name)を見ながら結果を解釈したり、情報検索したい
+
+    2.  下流解析における特定の解析方法に必要となるため
+
+        -   結果としての遺伝子群（遺伝子の集まり）をいくつかの機能的カテゴリーにマッピングする遺伝子セット解析に用いる、遺伝子シグネチャーを含んだファイル（gmtファイルと呼ぶ）は特定の記述形態を要求する
+
+            -   例
+
+                -   msigDBのシグネチャーを用いる場合：entrezまたはsymbol
+
+                -   clusterProfilerパッケージに内蔵されたシグネチャーを用いる場合：entrez
+
+    -   そのため、識別子の変換（ID変換）や遺伝子シンボルの対応付け処理をすることが多い
+
+## 遺伝子識別子間の突合の手順
+
+-   HGNCからダウンロードしたデータを用いる場合は、手持ちデータの識別子との対応表を作成して、マッチング処理をする手順を踏むとよい
+
+-   今回のデータの場合は、entrez_idを主キーにして、遺伝子シンボルを結合するという操作をやってみる
+
+    -   手順
+
+        1.  `annotation_info$entrez_id` の各要素が`hgnc_annotation$entrez_id` の何番目の要素（何行目）に対応するかの添え字を取得する。取得には集合間の比較関数、`match()`または`%in%`関数を用いる。ただし、`match()`または`%in%` は挙動が異なるので後ほど説明する
+
+        2.  対応させるための添え字を用いて、対応する遺伝子シンボルを`hgnc_annotation$symbol` から取得する
+
+        3.  取得した遺伝子シンボルを`annotation_info` の列方向に追加する
+
+**match()関数を用いる場合**
+
+match()関数は二つのベクトルがあった場合に、両者の要素が対応する添え字を返す関数である
+
+-   二つのベクトルを引数に取り、`match(a, b)` はベクトルaの各要素がベクトルbの何番目に対応するのか添え字を返す。対応する要素がベクトルbに存在しない場合は欠損`NA`を返す
+
+-   例えば、a = ("Apple","Orange","Pine")でb = ("Orange","Apple","Grape")という二つのベクトルがあった場合には、`match(a,b)` はベクトルaの"Apple"と"Orange"がベクトルbの2番目と1番目の要素に対応するため結果は(2,1)となり、また"Pine"は対応する要素がないため欠損`NA`となる。
+
+    ```{r}
+    a <- c("Apple","Orange","Pine")
+    b <- c("Orange","Apple","Grape")
+    match(a,b)
+    ```
+
+問題に適用すると以下のようになる。
+
+```{r}
+idx_match <- match(annotation_info$entrez_id,hgnc_annotation$entrez_id)
+str(idx_match)
+```
+
+**`%in%`を用いる場合**
+
+%in%も表記が特殊なように見えるが関数の一種で、二つのベクトルがあった場合に、要素ごとに包含関係を返す関数。
+
+-   二つのベクトルを引数に取り、`a %in% b` はベクトルaの各要素が、ベクトルbのいずれかの要素に含まれるかどうかを判定して`TRUE/FALSE`を返す。
+
+-   数学的には、集合aの各要素iごとに、a[i] $\in$ bが真であればTRUE、それ以外であればFALSEという意味である。
+
+-   先ほどの例を再び用いる。a = ("Apple","Orange","Pine")でb = ("Orange","Apple","Grape")があったときに、`a %in% b` を実行すると、ベクトル`a`の"Apple"と"Orange"はベクトル`b` の要素に存在するため、`TRUE`、`TRUE`となり、"Pine"はベクトルbには存在しないため`FALSE`となる
+
+    ```{r}
+    a <- c("Apple","Orange","Pine")
+    b <- c("Orange","Apple","Grape")
+    a %in% b
+    ```
+
+問題に適用すると、
+
+```{r}
+idx_in <- annotation_info$entrez_id %in% hgnc_annotation$entrez_id
+str(idx_in)
+```
+
+-   最終的に、annotation_infoとhgnc_infoを突合する
+
+-   ここでは、hgnc_infoの遺伝子シンボルをannotation_infoに結合する
+
+```{r}
+merge_annotation <- cbind(annotation_info,symbol = hgnc_annotation$symbol[idx_match])
+str(merge_annotation)
+```
+
+**match()と%in%の違い**
+
+二つはどちらもベクトル間の比較を行う関数だが、それぞれの返す結果と用途に違いがある。以下に、`match()` と `%in%` の違いをまとめた。
+
+| 関数      | 返り値の形式         | 用途                                           | 要素が見つからない場合 | 重複要素がある場合の挙動                   |
+|---------------|---------------|---------------|---------------|---------------|
+| `match()` | インデックス         | 要素がどの位置にあるか知りたい場合             | `NA`                   | 最初に一致した要素のインデックスを返す     |
+| `%in%`    | 論理値（TRUE/FALSE） | 要素が含まれているか（包含関係）を知りたい場合 | `FALSE`                | 重複する要素があってもTRUE/FALSEのみを返す |
+
+-   **返される値の形式**:
+    -   **`match()`** は、**対応する要素のインデックス（添え字）**を返す。要素が見つからない場合は `NA` を返す。
+        -   例: `match(a, b)` の場合、ベクトル `a` の要素が `b` の何番目にあるか、そのインデックスを返す。
+
+        -   結果はベクトル形式で、`a` の各要素に対応するインデックスが返される。
+    -   **`%in%`** は、**TRUE/FALSE** の論理値ベクトルを返す。要素が存在すれば `TRUE`、存在しなければ `FALSE` となる。
+        -   例: `a %in% b` の場合、ベクトル `a` の各要素が `b` に存在するかどうかを判定して、論理値を返す。
+-   **出力の目的**:
+    -   **`match()`** は、特定の要素がどの位置にあるか（インデックス）を知りたい場合に使用される。要素が重複している場合は、最初に一致した要素のインデックスを返す。
+        -   **用途例**: 2つのベクトルの対応する位置を見つけたいとき、またはインデックス操作をしたいとき。
+    -   **`%in%`** は、あるベクトルの要素が他のベクトルに含まれているかを判定するために使用される。インデックスは必要ないが、存在確認だけをしたい場合に適している。
+        -   **用途例**: 要素の包含関係（あるベクトルに要素が含まれているかどうか）を調べたいとき。
+-   **NAの扱い**:
+    -   **`match()`** は、要素が見つからない場合に `NA` を返す。
+    -   **`%in%`** は、要素が見つからない場合に `FALSE` を返す。
+
+**転写物 / 遺伝子識別子へ適用する際の考慮点**
+
+一般的に、識別子は常にユニークであることを保証しておく
+
+-   ユニークであるかを確認するためには、重複を除く前後で要素数が変わるかどうかを調べたり、要素の重複を逐次的に調べればよい
+-   重複を除くにはデフォルト関数の`unique()`を用いる
+    -   unique(a)はベクトルaの要素から重複を除外したベクトルを返す
+    -   以下は、`hgnc_annotation$entrez_id`からなるベクトルに対して、そのままのベクトル`hgnc_id_asis`と重複を除いたベクトル`hgnc_id_uniq`の長さを`length()`でそれぞれ計算して、等しいかどうかを`==`演算子でTRUE/FALSEで判定するコードである
+
+```{r}
+hgnc_id_asis <- hgnc_annotation$entrez_id
+hgnc_id_uniq <- unique(hgnc_annotation$entrez_id)
+length(hgnc_id_asis) == length(hgnc_id_uniq)
+```
+
+-   重複を逐次的に調べるには、`duplicated()`を用いる
+
+    -   duplicated(a)はベクトルaに対して前方から要素ごとに調べていき、後方で重複していればTRUE、そうでなければFALSEを要素ごとに調べて、ベクトルで返す
+
+    -   以下の簡単な例では、"Apple"が４番目と5番目の要素で重複し、"Pine"は7番目の要素で重複しているため、duplicated(a)は4,5,7番目でTRUEを返し、それ以外ではFALSEを返すはずである
+
+        ```{r}
+        a <- c("Apple","Orange","Pine","Apple","Apple","Grape","Pine")
+        duplicated(a)
+        ```
+
+-   さらに、any()関数を併用すると、any()関数はduplicated(a)の結果ベクトルに対して、TRUEが少なくとも一つでも含まれていればTRUEを返すことができる
+
+    -   ちなみに、all()関数はベクトル要素すべてがTRUEのときのみTRUEを返すので、特定の条件判定がすべてTRUEかを調べる場合に便利
+
+        ```{r}
+        any(duplicated(a))
+        ```
+
+-   これを問題に適用すると以下のようになる。
+
+```{r}
+any(duplicated(hgnc_annotation$entrez_id))
+```
+
+-   結果がFALSEということは、いずれの要素にも重複がなかった、という結論になる。したがって識別子はユニークであることがわかった。
+
+-   同じようにannotation_info\$entrez_idにも適用して、識別子がユニークかどうかを確認しておく
+
+```{r}
+any(duplicated(annotation_info$entrez_id))
+```
+
+**遺伝子シンボルを対応づける場合の考慮点**
+
+-   一般的に、識別子と遺伝子シンボルを対応づける場合に以下のケースが生じることがある
+
+    -   識別子 - 遺伝子シンボル間は１対多対応で一つの遺伝子シンボルに複数の識別子が対応
+
+    -   対応する識別子やシンボルが存在しない
+
+-   例えば、遺伝子発現量データの行名（遺伝子識別子）を遺伝子シンボルに対応づけたい場合
+
+-   その場合の対応は、後述するが、アノテーション情報を操作する前に、まず発現量データのほうで遺伝子シンボルが重複する行（識別子）に対して、**何らかのフィルター基準を用いて**、一つの行を選択する操作が一般的である。その後、対応する行のアノテーション情報に対して同様にフィルターをしてから、遺伝子シンボルを対応づける操作を行う
+
+# 演習８　メタ情報の準備
+
+-   メタ情報の準備を進めていく
+
+-   データを読み込む
+
+```{r}
+meta_info <- fread("dataset/meta_info.tsv",data.table = FALSE)
+str(meta_info)
+```
+
+-   このデータでは４列あり、２列目はサンプル名に相当し、３列目はグループ情報（1,2,3で表されている)、lib_sizesはライブラリサイズを表すが、今回は意味のある情報は含まれてない
+
+-   １列目は不要なので除外しておく
+
+```{r}
+meta_info <- meta_info[,-1]
+```
+
+# オブジェクト作成
+
+-   遺伝子発現量データ、メタデータ、アノテーションデータの読み込みと準備を行ったきた
+
+-   これらの情報を相互に整合性を維持しながら、下流解析を行う必要がある
+
+    -   特定の遺伝子をフィルタリングしたときに、同時にアノテーション情報との整合性も保持したい
+
+    -   特定のサンプルを選択したときに、同時にメタ情報との整合性も保持したい、など
+
+-   個別に管理すると煩雑なため、システマティックに操作できることが望ましい
+
+## **SummarizedExperiment**
+
+-   定量値、メタ情報、アノテーション情報を一つのオブジェクトで統一的に管理
+
+-   サンプルや遺伝子のフィルターをした際に、全ての情報が更新されていくため操作が簡易化される
+
+-   前身はExperimenetSetという形式
+
+    -   多くは置き換わっているが公共データデータベースを操作するGEOqueryパッケージなど、マイクロアレイデータを含む場合は、使用されている
+
+    -   その場合は、SummarizedExperimentに変換して使うことを勧める
+
+[![SummarizedExperimentの構造](img/se_overview.svg)](https://www.bioconductor.org/packages/release/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html)
+
+# 演習９　SummarizedExperiment（DESeq2の場合）
+
+オブジェクトの構築には以下のようにする
+
+```{r}
+library(SummarizedExperiment)
+se <- SummarizedExperiment(assays = list(expr = gexpr),rowData = merge_annotation,colData = meta_info)
+```
+
+-   `assays = list(expr = gexpr)`
+
+    -   `assays` 引数には、実際の実験データ（例: 遺伝子発現データ）が格納される
+
+    -   遺伝子発現データの行列またはデータフレームで、行が遺伝子（特徴）、列がサンプルを表す。
+
+    -   `list(expr = gexpr)` としているのは、アッセイデータが1つ以上ある可能性があるため、リスト形式でデータを渡している。ここでは、`expr` という名前のリストに `gexpr`（遺伝子発現データ）を含めている。
+
+-   `rowData = annotation_info`
+
+    -   `rowData` は、**行（つまり遺伝子や観測対象）のアノテーション情報**を格納する引数
+
+    -   遺伝子に関するアノテーション情報が含まれたデータフレーム。例えば、`entrez_id` や `ensembl_id` などの遺伝子識別子や他の遺伝子に関連する情報がここに入る。
+
+    -   **行ごとの追加情報**を管理し、実験データと関連付ける
+
+-   `colData = meta`
+
+    -   `colData` は、**列（つまりサンプル）に関するメタデータや実験条件情報**を格納する引数
+
+    -   `meta` は、サンプルごとの実験条件やライブラリサイズ、サンプルIDなどの情報を含んだデータフレーム
+
+    -   例えば、`group`（実験グループ）や `rep_id`（リプリケートID）といったサンプルごとの情報が含まれていると考えられる
+
+    -   **サンプルごとの追加情報**を提供し、解析に必要なメタデータを保持する。
+
+-   一般的にSummarizedExperimentオブジェクトの作成時に、発現量情報の行名と列名を、アノテーション情報の行名、メタ情報の行名とマッチングさせる
+
+    -   マッチングしない場合はエラーになる
+
+    -   慎重なコードの書き方は、発現量情報の行名と列名に対応したものを、アノテーション情報の行名、メタ情報の行名に設定しておくこと
+
+    -   再度、コードを示すと以下のようになる
+
+```{r}
+# 行名を設定
+rownames(annotation_info) <- annotation_info$entrez_id
+rownames(meta_info) <- meta_info$rep_id
+
+se <- SummarizedExperiment(assays = list(expr = gexpr),rowData =  merge_annotation,colData = meta_info)
+```
+
+# 演習１０　seオブジェクトの操作
+
+### 基本操作
+
+最低限覚える操作は、rowData()、colData()、assay()の３つ
+
+-   `assay()`
+
+    -   `ssay(se)` で最初のアッセイデータ（この場合、`expr`）にアクセスできる。複数のアッセイがある場合は、`assays(se)[[1]]` で最初のアッセイを、`assays(se)[["expr"]]` で名前を指定してアクセスできる。
+
+        ```{r,eval=FALSE}
+        # （１つ目の）アッセイ（遺伝子発現データ）
+        assay(se)
+
+        # 特定のサンプルのデータにアクセス（例: sample_01）
+        assay(se)[, "sample_01"]
+
+        # 特定の遺伝子のデータにアクセス（例: 1行目の遺伝子）
+        assay(se)[1, ]
+        ```
+
+-   `rowData()`
+
+    -   rowData(se)で遺伝子（行）アノテーションにアクセスできる
+
+        ```{r,eval=FALSE}
+        # 遺伝子アノテーション全体
+        rowData(se)
+
+        # Entrez ID にアクセス
+        rowData(se)$entrez_id
+
+        # Ensembl ID にアクセス
+        rowData(se)$ensembl_id
+        ```
+
+-   `colData()`
+
+    -   `colData(se)` でサンプルのメタデータ全体にアクセス。個別の列（リプリケートIDやグループなど）には、`colData(se)$rep_id` のようにアクセス。
+
+        ```{r,eval=FALSE}
+        # サンプルのメタデータ全体
+        colData(se)
+
+        # サンプルのリプリケートIDにアクセス
+        colData(se)$rep_id
+
+        # サンプルのグループにアクセス
+        colData(se)$group
+        ```
+
+## 有用性
+
+`SummarizedExperiment` オブジェクトを用いる有用性の1つは、**行方向や列方向でデータをフィルタリングした際に、関連するメタデータ（行と列のアノテーション情報）が常に整合性を持って保たれる**こと。これは、特に大規模な遺伝子発現データやゲノミクスデータの解析において非常に重要。
+
+-   `SummarizedExperiment` オブジェクトを使用することで、**発現データとメタデータの一貫性と整合性が自動的に維持される**ため、大規模なゲノミクスデータを扱う際のフィルタリング操作が安全かつ効率的に行える。
+-   行や列のサブセット化を行うたびに、対応する遺伝子やサンプルのアノテーションが自動的に更新されるため、**解析結果の信頼性**が高まる。
+
+以下に、その整合性がどのように保たれるかを、フィルタリングの例を交えて説明する。
+
+### 1. **行方向のフィルタリング（遺伝子フィルタリング）**
+
+-   データ解析において、特定の条件に合った遺伝子のみを抽出したい場合がある。例えば、発現が一定以上の遺伝子や特定の遺伝子群のみを対象とする場合。
+
+-   `SummarizedExperiment` オブジェクトでは、行方向のフィルタリング（遺伝子のサブセット化）を行うと、対応する遺伝子のアノテーション情報（`rowData`）も自動的にサブセット化され、データの整合性が保たれる。
+
+    -   **例**: 発現値が基準を満たす遺伝子のみを抽出する場合
+
+        ```{r}
+        # 発現値の行方向平均が1000以上の遺伝子を抽出
+        se_filtered <- se[rowMeans(assay(se)) >= 1000, ]
+
+        # フィルタリング後もrowDataの整合性が保持される
+        rowData(se_filtered)
+        ```
+
+        `assay` の発現データだけでなく、**遺伝子のアノテーション情報（`rowData`）も同時にフィルタリングされる**。これにより、発現データとその遺伝子に対応するメタデータの間の整合性が常に維持される。
+
+### 2. **列方向のフィルタリング（サンプルフィルタリング）**
+
+-   特定のサンプル群（例えば、特定の実験条件やグループに属するサンプル）だけを抽出して解析したい場合がある。
+
+-   列方向のフィルタリング（サンプルのサブセット化）を行うと、対応するサンプルのメタデータ（`colData`）も自動的にサブセット化され、サンプルデータとそのメタ情報の整合性が保たれる。
+
+    -   **例**: グループ1のサンプルのみを抽出する場合。
+
+        ```{r}
+        # グループ1のサンプルのみを抽出
+        se_group1 <- se[, colData(se)$group == 1]
+
+        # フィルタリング後もcolDataの整合性が保持される
+        colData(se_group1)
+        ```
+
+    -   この操作により、選択されたサンプルのデータ（`assay`）と、対応するサンプルに関するメタデータ（`colData`）が常に同期して保持される。
+
+    -   **グループに基づいたフィルタリングが行われた場合でも、サンプルのメタデータと発現データは一貫して管理される**。
+
+### 3. SummarizedExperimentの仕組み
+
+-   **一元的なデータ管理**
+    -   `SummarizedExperiment` オブジェクトは、実験データ（発現データなど）とそれに関連するアノテーション情報（`rowData` と `colData`）を**1つのオブジェクトに統合**しており、フィルタリング操作やサブセット化を行う際に、発現データとアノテーション情報の間で**自動的に整合性が保たれる**。
+-   **データの整合性維持の自動化**
+    -   フィルタリング操作を行うと、対応するアノテーションデータも同時に更新されるため、手動でデータの整合性をチェックしたり管理する必要がない。これにより、**人為的ミスのリスクが低減され、解析が効率的に行える**。
+
+## 補足：SummarizedExeprimentの構造
+
+-   学習のためにseオブジェクトの中身を見ておこう
+
+-   単純なプリントはオブジェクトの概要を標準出力する
+
+```{r}
+# シンプルにprint
+se
+```
+
+以下の内容が読み取れる
+
+-   **class: SummarizedExperiment**
+
+    -   オブジェクトのクラスが `SummarizedExperiment` であること示す。これは、生物学的な実験データを扱うためのデータ構造である。
+
+-   **dim: 1000 9**
+
+    -   データの次元を示す。1000行（遺伝子や観測対象）と9列（サンプル）で構成されている。
+
+-   **metadata(0):**
+
+    -   メタデータの構造（今回はなし）。メタデータは追加的な情報を格納するための領域
+
+-   **assays(1):**
+
+    -   アッセイデータ（実際の数値データ）が1つ含まれている、名前はexprに設定されている。ここには遺伝子発現データなどが格納される。
+
+-   **rownames(1000): 54777 81034 \... 24148 100287178**
+
+    -   行名（遺伝子や観測対象のID）が1000個あり、例として "54777", "81034" などが示されている。これらは行ごとに異なる識別子。
+
+-   **rowData names(2): entrez_id ensembl_id**
+
+    -   各行に関連付けられた追加情報（遺伝子アノテーションなど）を保持している列名が2つある。`entrez_id` と `ensembl_id` という2種類の遺伝子識別子が格納されている。
+
+-   **colnames(9): sample_01 sample_02 \... sample_08 sample_09**
+
+    -   列名（サンプル名）が9個ある。例として "sample_01", "sample_02" などがあり、各列は異なるサンプルに対応している。
+
+-   **colData names(3): rep_id group lib_sizes**
+
+    -   各サンプルに関連付けられた追加情報を保持する列名が3つある。
+
+    -   **rep_id**: リプリケートID（サンプルの識別子）。
+
+    -   **group**: サンプルの実験グループ。
+
+    -   **lib_sizes**: 各サンプルのライブラリサイズ（シーケンスデータのスケールを示す数値）。
+
+    -   
+
+注：SummarizedExperiment()には`metadata=` 引数も存在する
+
+-   colDataには解析に直接関与するサンプル情報を入れる
+
+-   metadataには直接関与しないが、測定時のさまざまな条件等の補助情報を入れる
+
+    -   今回はないため空である
+
+次にstr()を用いて、seオブジェクトについてもう少し詳細に理解しておこう。
+
+```{r}
+str(se)
+```
+
+-   5つの主要スロットを持っている
+
+    1.  colData
+
+    2.  assays
+
+    3.  NAMES
+
+        -   行（遺伝子）の名前、ここではEntrez Gene IDを保持。
+
+        -   1000個の遺伝子名（例: `"54777"`, `"81034"`, `"10969"` など）。
+
+    4.  elementMetadata
+
+        -   各行（遺伝子）に対応するメタデータを格納。
+
+        -   **`entrez_id`**: Entrez Gene ID（例: 54777, 81034 など）。
+
+        -   **`ensembl_id`**: Ensembl Gene ID（例: `"ENSG00000171811"`, `"ENSG00000164933"` など）。
+
+    5.  metadata
+
+        -   データセット全体に関する補足情報を格納。
+
+            -   colDataは解析に直接関連する情報だが、metadataは測定時のテクニカルな情報など補助情報
+
+        -   SummarizedExperiment()の`metadata=` 引数で指定できる
+
+        -   現時点では空のリスト
+
+# 演習１１ DGEオブジェクトの作成（limmaの場合）
+
+-   DGEオブジェクトはlimmaで使用すると前処理まで統一的に扱えるため便利
+
+-   SummarizedExperimentsオブジェクトとは別の整合性保持メカニズムを有する.
+
+-   構築の方法
+
+    -   `readDGE()`で読み込むと、DGEオブジェクトとして読み込まれる
+
+    -   別の方法で読み込む場合は、dgeList()関数でオブジェクトを作成
+
+**`readDGE()`を用いる場合**
+
+データ読み込みに用いたコードを再掲する
+
+```{r}
+library(edgeR)
+files <- list.files("dataset/gene_exprs/",full.names = TRUE)
+gexpr2 <- readDGE(files, columns=c(1,2))
+```
+
+実際、readDGE()で読み込んだオブジェクトはdgeListオブジェクトになっている
+
+```{r}
+class(gexpr2)
+```
+
+**`DGEList()`を用いる場合**
+
+-   まず、DGEList()のヘルプを以下に記載する
+
+## Create a DGEList object
+
+### Description
+
+Assembles a `DGEList` object from its components, especially the table `counts` as a matrix or data.frame.
+
+### Usage
+
+``` r
+## Default S3 method:
+DGEList(counts, lib.size = NULL, norm.factors = NULL,
+    samples = NULL, group = NULL, genes = NULL,
+    remove.zeros = FALSE, ...)
+
+## S3 method for class 'data.frame':
+DGEList(counts, lib.size = NULL, norm.factors = NULL,
+    samples = NULL, group = NULL, genes = NULL,
+    remove.zeros = FALSE, annotation.columns = NULL, ...)
+```
+
+### Arguments
+
+-   **counts**:\
+    numeric matrix or data.frame containing sequence read counts, with rows corresponding to genes (genomic features) and columns to samples. Negative values or NAs are not allowed.
+
+-   **lib.size**:\
+    numeric vector of library sizes (sequencing depths) for the samples. Defaults to `colSums(counts)`.
+
+-   **norm.factors**:\
+    numeric vector of normalization factors that modify the library sizes. Defaults to a vector of ones.
+
+-   **samples**:\
+    data.frame containing sample information, with a row for each sample. This data.frame will be appended to the samples component of the `DGEList` object.
+
+-   **group**:\
+    vector or factor giving the experimental group or treatment condition for each sample. Defaults to a single group.
+
+-   **genes**:\
+    data.frame containing gene annotation.
+
+-   **remove.zeros**:\
+    logical, whether to remove rows that have 0 total count.
+
+-   **annotation.columns**:\
+    specify columns of `counts` that contain gene annotation rather than counts. Can be a vector of column numbers, or a vector of column names, or a logical vector.
+
+-   **...**:\
+    other arguments are not currently used.
+
+ヘルプを読むと以下のように説明されていることがわかる。
+
+-   `DGEList` 関数は、RNA-Seqなどの遺伝子発現データのカウントデータ（遺伝子 × サンプルの行列）を入力としてとる。データの整理、解析に必要なメタデータ（サンプル情報、ライブラリサイズ、正規化ファクターなど）と一緒に管理するためのオブジェクトを生成。
+
+-   以下のような引数がある
+
+``` r
+dge <- DGEList(counts, lib.size = NULL, norm.factors = NULL,
+    samples = NULL, group = NULL, genes = NULL, remove.zeros = FALSE, ...)
+```
+
+-   **counts**: 遺伝子 × サンプルのリードカウントデータ。これは必須の引数。
+-   **lib.size**: 各サンプルのライブラリサイズ。`colSums(counts)` がデフォルト。
+-   **norm.factors**: 正規化のためのファクター。デフォルトは1のベクトル。
+-   **samples**: 各サンプルのメタデータを含む `data.frame` 。
+-   **group**: 各サンプルがどの実験グループに属するかを指定するベクトルまたは因子。
+-   **genes**: 遺伝子に関するアノテーションを含む `data.frame` 。
+-   **remove.zeros**: 全てのサンプルでカウントが0の遺伝子を削除するかどうか（論理値）。
+
+先ほど学んだ、SummarizedExperiments()の引数と可能な限り対応させると、
+
+-   counts --\> assay
+
+-   samples --\> colData
+
+-   genes --\> rowData
+
+のように対応することがわかる。また、グループ情報groupはDGEListのみが有する変数である。
+
+具体的には、以下のようにDGEListオブジェクトを作成する
+
+```{r}
+dge <- DGEList(counts = gexpr,samples = meta_info,group = meta_info$group,genes = merge_annotation)
+```
+
+せっかくなので、SummarizedExeprimentsとの比較を以下の表にまとめておく。
+
+| **項目**                       | **DGEList** (edgeR)                                  | **SummarizedExperiment** (SummarizedExperiment パッケージ)  |
+|------------------|--------------------------|----------------------------|
+| **主な用途**                   | 遺伝子変動発現解析 (特に RNA-Seq カウントデータ)     | 生物学的データの包括的な管理 (RNA-Seq、マイクロアレイ、他)  |
+| **データ形式**                 | カウントデータがメイン。遺伝子 × サンプルの行列      | 多様なデータを扱えるが、主にカウントデータや発現データ      |
+| **実験データの格納**           | `counts` スロットに RNA-Seq カウントデータを格納     | `assays` スロットにカウントデータや他のアッセイデータを格納 |
+| **サンプル情報の管理**         | `samples` スロットで管理                             | `colData` スロットで管理                                    |
+| **遺伝子アノテーションの管理** | `genes` スロットで管理                               | `rowData` スロットで管理                                    |
+| **ライブラリサイズの管理**     | `lib.size` スロットで管理。自動的に計算される        | `colData` にライブラリサイズ情報を手動で追加可能            |
+| **正規化ファクターの管理**     | `norm.factors` スロットで正規化ファクターを管理      | 正規化ファクターを独自に計算して適用する                    |
+| **全体メタデータの管理**       | `metadata` スロットは存在しない                      | `metadata` スロットで追加のメタデータを格納                 |
+| **行方向のフィルタリング**     | カウントが0の行をフィルタリング可能 (`remove.zeros`) | 行のアノテーションに基づいてフィルタリング可能              |
+| **列方向のフィルタリング**     | グループやサンプルメタデータに基づいて可能           | サンプルメタデータに基づいて柔軟にフィルタリング可能        |
+| **主なパッケージ**             | edgeR                                                | SummarizedExperiment パッケージ、および関連するBioconductor |
+| **解析のフォーカス**           | 発現変動解析の準備と処理                             | 広範な生物学的解析のためのデータ管理                        |
+| **特徴**                       | edgeR パッケージで遺伝子変動発現解析に最適化         | 複数のアッセイや多様なデータ型を統合して解析可能            |
+| **サポートされるデータ型**     | RNA-Seq データがメイン                               | RNA-Seq、マイクロアレイ、他のオミックスデータ               |
+
+## オブジェクト作成後の流れ
+
+オブジェクトを作成後のワークフローはlimmaとDESeqで異なる
+
+-   DESeq2:
+
+    -   変動解析を前処理を含めてワンストップで行うdds()関数を適用
+
+-   Limma
+
+    -   複数の前処理を行って変動解析を適用（目次の手順）
+
+以降では、どのような処理が必要なのかを学習するためLimmaを想定して説明する
+
+# ライブラリサイズ補正
+
+-   シークエンサーはリード(read)と呼ばれる大量の配列断片を出力する
+
+-   発現量は、個々のリードを参照ゲノムに対して照合していき（アライメント）、転写物領域と重なるリード数をカウントする（定量化）
+
+-   ここで、まず問題になるのは、サンプルごとに出力されるリード数（これを**ライブラリサイズ**と呼ぶ）にはばらつきがある点である。このばらつきは機械的なばらつきによるものであり、生物学的なものではない。
+
+-   このばらつきは、サンプル間の発現量比較に偏りを生じさせ、偽陽性の一因となる
+
+-   ライブラリサイズ補正とは、このばらつきを事前に削減する処理である
+
+-   ライブラリサイズについては、オブジェクトを作成した時点でカウント値に基づいて計算されている
+
+    -   `dge$sample$lib.size` を参照すればよい
+
+        ```{r}
+        dge$sample$lib.size
+        ```
+
+    -   実際、この値は容易に計算できる。定義から単純に各サンプルごとの全ての転写物/遺伝子のカウント値に対する総和を計算すればよい
+
+    -   以下の計算で、デフォルトで計算されたものと一致することがわかる
+
+        ```{r}
+        colSums(dge$counts) == dge$samples$lib.size
+        ```
+
+-   このライブラリサイズを用いて補正する
+
+-   limmaではライブラリサイズ補正にTMM補正を用いる
+
+## **Trimmed Mean of M-values** (TMM)
+
+-   RNA-Seqデータの**ライブラリサイズの違い**を補正するための手法
+
+    -   `edgeR`パッケージで広く使用されている
+
+    -   主に２つの特徴がある
+
+        1.  **ライブラリサイズの違いを補正**
+
+            -   異なるサンプル間のライブラリサイズの違いを補正するため、サンプル間での発現レベルの比較が可能。
+
+        2.  **外れ値の除去**
+
+            -   極端な発現値をトリムすることで、外れ値の影響を減らし、データの信頼性を向上させる。
+
+## TMM補正の全体フロー
+
+1.  **M値とA値の計算**：サンプル間の対数発現比と平均発現量を計算。
+2.  **トリミング**：外れ値となる極端な発現値を除外。
+3.  **重み付け**：各遺伝子に発現レベルに応じた重みを付与。
+4.  **TMMファクターの計算**：トリムされたデータから補正ファクターを計算。
+5.  **正規化**：TMMファクターを使って、ライブラリサイズを正規化し、バイアスを除去。
+
+## TMM補正の手順と数式
+
+#### 1. **M値（M-values）の計算**
+
+-   TMM補正の最初のステップでは、各遺伝子の対数発現比（M値）を計算する。
+
+-   M値は、**リファレンスサンプル**に対する各サンプルの相対的な発現比率を示す。
+
+    -   ここで**レファレンスサンプル**とは、いくつかの意味を含むと考えられる
+
+        -   代表的なサンプル（いずれの状態にも偏らない中間的なもの）
+
+        -   実験条件における基準となる（ベースライン）
+
+        -   技術的に高品質なサンプル
+
+    -   もし、レファレンスサンプルがない場合は、後述する疑似レファレンスサンプル（pseudo-reference sample)を構成して、各サンプルとの相対的な発現比率を計算する
+
+-   ある遺伝子 $i$ におけるサンプル $A$ とリファレンスサンプル $R$ の発現値に対して、M値は以下のように計算される：
+
+$$
+M_i = \log_2 \left( \frac{y_{iA} / N_A}{y_{iR} / N_R} \right)
+$$
+
+-   $y_{iA}$: サンプル $A$ における遺伝子 $i$ のカウント数
+-   $y_{iR}$: リファレンスサンプル $R$ における遺伝子 $i$ のカウント数
+-   $N_A$: サンプル $A$ の総カウント数（ライブラリサイズ）
+-   $N_R$: リファレンスサンプル $R$ の総カウント数（ライブラリサイズ）
+
+この $M_i$ は、サンプル間の対数発現比を表す
+
+#### 2. **A値（A-values）の計算**
+
+-   次に、A値（A-values）を計算する
+
+    -   各遺伝子のサンプル $A$ とリファレンスサンプル $R$ における**平均発現レベル**を表す：
+
+$$
+A_i = \frac{1}{2} \log_2 \left( y_{iA} \times y_{iR} \right)
+$$
+
+#### 3. **トリミング**
+
+-   外れ値となる極端な $M_i$ や $A_i$ を除外するためにトリミングを行う
+
+    -   このステップによって、発現値の異常な遺伝子やサンプルの影響を減らすことができる
+
+-   M値とA値の両方で上位および下位のパーセンタイルをトリムする
+
+#### 4. **重み付け**
+
+-   各遺伝子に対して重み $w_i$ を計算し、発現レベルに応じた重みを持たせる
+
+-   低発現の遺伝子や不確実なカウント値を持つ遺伝子には、低い重みが付与される
+
+重みは以下のように計算される：
+
+$$
+w_i = \frac{N_A N_R}{(N_A + N_R)^2}
+$$
+
+#### 5. **TMMファクターの計算**
+
+-   最後に、TMM正規化ファクター $TMM_A$ を計算する
+
+-   トリムされた $M_i$ の加重平均として計算される：
+
+$$
+TMM_A = \exp \left( \frac{\sum_{i \in S} w_i M_i}{\sum_{i \in S} w_i} \right)
+$$
+
+ここで $S$ はトリム後の遺伝子のセットである。
+
+#### 6. **正規化されたカウント値の計算**
+
+-   TMMファクターを使ってライブラリサイズを正規化する
+
+-   正規化後のライブラリサイズ $N_A^{\text{norm}}$ は、元のライブラリサイズに TMMファクターを適用することで得られる：
+
+$$
+N_A^{\text{norm}} = N_A \times TMM_A
+$$
+
+-   この正規化されたライブラリサイズを使用して、正規化されたカウントデータを用いて発現変動解析を行う。
+
+$$
+N_A^{\text{norm}} = N_A \times TMM_A
+$$
+
+**補足：疑似レファレンスサンプルの構成**
+
+-   疑似レファレンスは、各遺伝子 $i$ に対して、全サンプルのカウントデータ $y_{ij}$ の加重平均を基に次のように計算される
+
+-   ある遺伝子 $i$ に対して、疑似レファレンス $\bar{y}_i$ のカウント値は、全てのサンプルのカウント $y_{ij}$ をライブラリサイズに基づく重み $w_j$ で加重平均を取ることで計算される。
+
+$$
+\bar{y}_i = \frac{\sum_{j=1}^{m} w_j y_{ij}}{\sum_{j=1}^{m} w_j}
+$$
+
+-   $\bar{y}_i$: 疑似レファレンスにおける遺伝子 $i$ のカウント値
+
+-   $y_{ij}$: サンプル $j$ における遺伝子 $i$ のカウント値
+
+-   $w_j$: サンプル $j$ に対する重み（通常、ライブラリサイズに反比例して設定）
+
+-   $m$: サンプル数
+
+-   ここで、重み$w_j$は各サンプルのライブラリサイズの逆数を重みとして使用。
+
+$$
+w_j = \frac{1}{N_j}
+$$
+
+-   ライブラリサイズ $N_j$ はサンプル $j$ の全遺伝子に対するカウント値の合計：
+
+$$
+N_j = \sum_{i=1}^{n} y_{ij}
+$$
+
+-   $N_j$: サンプル $j$ のライブラリサイズ
+
+-   $n$: 遺伝子数
+
+-   重み係数によって、ライブラリサイズが大きいサンプルはデータに対してより強い影響を与え、ライブラリサイズが小さいサンプルは影響を軽減している
+
+-   あとは、ステップ１において、$y_{iA}$の代わりに疑似サンプルカウント $\bar{y}_i$ 、レファレンスサンプルのライブラリサイズ$N_R$:の代わり疑似ライブラリサイズ $N_j$ を置き換えて、同様に計算していけばよい
+
+# 演習１２　ライブラリサイズの補正
+
+-   edgeRパッケージにおけるライブラリ補正は`calcNormFactors()`で計算できる
+
+```{r}
+dge <- calcNormFactors(dge,method = "TMM")
+```
+
+-   デフォルトでTMM補正が選択されるため、実質的には以下のコードと等価である
+
+```{r,eval=FALSE}
+dge <- calcNormFactors(dge)
+```
+
+-   より詳しくこの関数の意味を理解するため、以下にヘルプの内容を確認してみよう。
+
+## Normalize Library Sizes
+
+### Description
+
+Calculate scaling factors to convert the raw library sizes for a set of sequenced samples into normalized effective library sizes.
+
+### Usage
+
+``` r
+## S3 method for class 'DGEList'
+calcNormFactors(object,
+                method = c("TMM", "TMMwsp", "RLE", "upperquartile", "none"),
+                refColumn = NULL, logratioTrim = .3, sumTrim = 0.05, doWeighting = TRUE,
+                Acutoff = -1e10, p = 0.75, ...)
+
+## S3 method for class 'SummarizedExperiment'
+calcNormFactors(object,
+                method = c("TMM", "TMMwsp", "RLE", "upperquartile", "none"),
+                refColumn = NULL, logratioTrim = .3, sumTrim = 0.05, doWeighting = TRUE,
+                Acutoff = -1e10, p = 0.75, ...)
+
+## Default S3 method
+calcNormFactors(object, lib.size = NULL,
+                method = c("TMM", "TMMwsp", "RLE", "upperquartile", "none"),
+                refColumn = NULL, logratioTrim = .3, sumTrim = 0.05, doWeighting = TRUE,
+                Acutoff = -1e10, p = 0.75, ...)
+```
+
+### Arguments
+
+-   **object**:\
+    A matrix of raw read counts or a `DGEList` object or a `SummarizedExperiment` object.
+
+-   **lib.size**:\
+    Numeric vector of library sizes corresponding to the columns of the matrix object.
+
+-   **method**:\
+    Normalization method to be used. Choices are:
+
+    -   "TMM": Trimmed Mean of M-values
+    -   "TMMwsp": Weighted Sum of Pairs
+    -   "RLE": Relative Log Expression
+    -   "upperquartile": Upper Quartile normalization
+    -   "none": No normalization
+
+-   **refColumn**:\
+    Column to use as a reference for `method="TMM"`. Can be a column number or a numeric vector of length `nrow(object)`.
+
+-   **logratioTrim**:\
+    The fraction (0 to 0.5) of observations to be trimmed from each tail of the distribution of log-ratios (M-values) before computing the mean. Used by `method="TMM"` for each pair of samples.
+
+-   **sumTrim**:\
+    The fraction (0 to 0.5) of observations to be trimmed from each tail of the distribution of A-values before computing the mean. Used by `method="TMM"` for each pair of samples.
+
+-   **doWeighting**:\
+    Logical, whether to use (asymptotic binomial precision) weights when computing the mean M-values. Used by `method="TMM"` for each pair of samples.
+
+-   **Acutoff**:\
+    Minimum cutoff applied to A-values. Count pairs with lower A-values are ignored. Used by `method="TMM"` for each pair of samples.
+
+-   **p**:\
+    Numeric value between 0 and 1 specifying which quantile of the counts should be used by `method="upperquartile"`.
+
+-   **...**:\
+    Other arguments are not currently used.入力データの時点で確認すべき事項
+
+## 説明
+
+-   object: 生のリードカウントを含む行列、または `DGEList` オブジェクト、または `SummarizedExperiment` オブジェクト。SummarizedExperimentの場合は、内部で自動的にDGEListに変換される
+
+-   method：TMM以外にの他の方法も指定できる。デフォルトではTMMが選択される
+
+-   refColumn：引数にはレファレンスサンプルの列番号（またはベクトル）を指定する。**何も指定しない場合は、疑似レファレンスを自動生成する**
+
+-   logratioTrim：M値分布からトリムするパーセンタイル（%）を指定する。値は0から0.5で、デフォルトは0.3つまり30%となっている
+
+-   sumTrim：A値分布からトリムするパーセンタイルを指定する。デフォルトは0.05つまり5%となっている
+
+## トリムパーセンタイルの設定
+
+TMMでトリムするパーセンタイルをいくつにするのか、実際には悩む部分であるが、多くの場合はデフォルト値で行われるのが一般的なようである。しかし、それでも特殊なサンプルが含まれる場合など疑義が生じる場合には以下のように考えると良い。
+
+`M-Aプロット`による可視化
+
+**`logratioTrim` のトリムパーセンタイル**
+
+-   `logratioTrim` は、**M値（対数発現比）**の分布の両端から外れ値を除外するのが目的
+
+    -   外れ値や極端な発現比がある場合、それらを除外することでデータの安定性を高めることができる
+
+-   **データに極端な発現量が多い場合**
+
+    -   トリムの割合を **増やす**（例: 0.4 や 0.5）ことを検討する。これにより、極端な発現比を持つ遺伝子が除外され、データの正確性が高まる。
+
+-   **データに外れ値が少ない場合**
+
+    -   トリムの割合を **減らす**（例: 0.1 や 0.2）ことを検討する。外れ値が少なければ、より多くの遺伝子を解析に使用できるため、トリムの割合を少なくすることで情報を最大限に活用できる。
+
+### パーセンタイルに対する考え方：
+
+-   **通常のRNA-Seqデータ**：デフォルトの **0.3** で十分。
+-   **外れ値が多い場合**：**0.4～0.5** に増やす。
+-   **外れ値が少ない場合**：**0.1～0.2** に減らす。
+
+### **`sumTrim` の決め方**
+
+-   `sumTrim` は、**A値（発現量の総和）**の分布の両端から外れ値を除外するのが目的
+
+    -   極端に低い（または高い）発現値を持つ遺伝子が影響を与えないようにするための調整
+
+-   **極端な発現レベルが多い場合**
+
+    -   トリムの割合を **増やす**（例: 0.1）。これにより、極端な発現量を持つ遺伝子が除外され、発現量の信頼性が向上する可能性がある。
+
+-   **発現レベルが均一な場合**
+
+    -   トリムの割合を **減らす**（例: 0.01 や 0.02）。これにより、より多くの遺伝子が補正に用いられる。
+
+### 閾値の目安：
+
+-   **通常のRNA-Seqデータ**：デフォルトの **0.05** で十分。
+-   **極端な発現レベルが多い場合**：**0.1** に増やす。
+-   **発現レベルが均一な場合**：**0.01～0.02** に減らす。
+
+# データのスケール変換と正規化
+
+-   RNA-Seqに先立って広く使われていた**高スループット遺伝子発現解析技術**の一つはマイクロアレイである
+
+    -   そのため、limmaを含め、初期の発現変動解析の数理モデルはマイクロアレイデータの性質に合わせて開発されたもの
+
+    -   マイクロアレイデータを統計モデルで解析する際の重要な前提の一つは、データの尺度である。マイクロアレイから得られるデータは本質的に（非負の）**連続値**であった
+
+        -   マイクロアレイでは、数千から数百万の遺伝子や遺伝子断片（DNAプローブ）が一つのスライド上に配列され、スライドをスキャンして、蛍光強度を測定する
+
+    -   limmaでは、連続値を扱う線形モデルが基礎にある（詳細は後述）
+
+        -   すなわち、サンプルごとの発現量が、説明変数（実験条件やグループ）によってどのように変化するかを評価することで、発現量の変動に関する統計的な推定を行う方法である
+
+$$
+y_{ij} = \beta_0 + \beta_1 \cdot x_{1j} + \beta_2 \cdot x_{2j} + \dots + \beta_n \cdot x_{nj} + \varepsilon_{ij}
+$$
+
+-   $y_{ij}$：サンプル $j$ における遺伝子 $i$ の発現量
+
+-   $\beta_0$：切片、または発現量のベースライン
+
+-   $\beta_1, \dots, \beta_n$：サンプル $j$ の各説明変数（例えば、グループやバッチ効果）の効果
+
+-   $\varepsilon_{ij}$：誤差項（残差）
+
+-   線形モデルが妥当である前提条件は、**正規分布**が仮定できる場合のみである
+
+-   ところが、すでに見たように、RNA-seqから得られる定量情報は、カウント値、すなわち**離散値**である
+
+-   離散値の分布は、ポアソン分布や負の二項分布によって表されるため、正規分布ではない。したがって、統計モデルの前提条件がRNA-seqにおいては成り立たず、そのまま線形モデル（limma）を用いることは誤り
+
+    -   DESeq2は離散値の分布（負の二項分布）を前提とした数理モデルを提案（後述）
+
+-   limmaを捨てるか？あるいは、正規分布の仮定を満たすようにRNA-seqのカウント値を連続値に変換するか？
+
+### 離散値から連続値へ変換
+
+-   離散値を何らかの方法で連続値に変換する操作が必要
+
+-   数学的には便利な方法がある。それがlog2変換である
+
+    $$
+    y'_{ij} = \log_2 (y_{ij} + 0.5)
+    $$
+
+-   0.5はオフセットと呼ばれ、他の数値でもよい（小さすぎず、大きすぎず）
+
+    -   加算している理由は、$y_{ij}$がゼロの場合に対数の定義により無限発散してしまうのを防ぐためである
+
+        -   ちなみに、R言語では無限を表す型があり、Infで表現される（負の無限大は-Inf、正の無限大はInf)
+
+### なぜ対数変換は有効なのか？
+
+-   もう一つ、カウント値に対数を用いることには大きな理由がある。それは、**分散を抑えるという役割**である
+
+-   カウントデータは大きくなるほど分散が大きくなる
+
+    -   線形モデルにおける正規分布以外にある、もう一つの隠れた前提条件は、**等分散性**である
+
+    -   遺伝子間における分散は等しいという仮定が妥当である必要がある
+
+-   なぜそうなるのかを理解するためには、カウントデータの分布を表すポアソン分布を数学的性質を理解すれば良い
+
+    -   ポアソン分布は、単位時間や単位空間で発生する**稀なイベントの回数**をモデル化するために用いられる。
+
+        -   例えば、RNA-Seqデータにおいて、遺伝子ごとのリード数（カウントデータ）をモデル化するのにポアソン分布によるモデル化は妥当である（実際には、さらに拡張した負の二項分布であるが、ここでは簡単のためポアソン分布とする）。
+
+ポアソン分布は、次のように定義される。
+
+$$
+P(X = k) = \frac{\lambda^k e^{-\lambda}}{k!}
+$$
+
+ここで、
+
+-   $X$: カウントデータ（リード数など）
+
+-   $k$: 起こるイベントの回数
+
+-   $\lambda$: 平均発生回数（期待値）
+
+-   ポアソン分布の最も重要な特性の一つは、**平均と分散が等しい**という点である。
+
+-   つまり、ポアソン分布に従うデータにおいて、分散はその期待値（平均）に等しくなる。
+
+$$
+\mathbb{E}[X] = \lambda, \quad \mathrm{Var}(X) = \lambda
+$$
+
+-   $\mathbb{E}[X]$: 平均
+
+-   $\mathrm{Var}(X)$: 分散
+
+-   $\lambda$: 平均カウント数（期待値）
+
+-   これにより、**カウントデータの期待値が大きくなるほど、分散も大きくなる**という関係が自然に導かれる。
+
+-   実際、遺伝子発現のカウント値のレンジは非常に幅広い。
+
+    -   たとえば、ある遺伝子Aのダイナミックレンジが[1000, 10000]でも、別の遺伝子Bの場合では[100000,500000]くらいに異なるケースもよく起こる
+    -   そのため、ポアソン分布から予測される分散を超えてしまうことが知られている（**過分散**と呼ぶ）
+    -   負の二項分布はそれを説明できるため、実際にはそちらが用いられている
+
+### 精度重みづけ
+
+-   RNA-seqにおけるもう一つの問題は、発現量の低い転写物 / 遺伝子の定量性である
+
+    -   シークエンサーには検出可能な下限があり、そこに近づくほど技術的なばらつき（装置に由来する測定誤差）との区別が難しくなるという性質がある（これはあらゆる測定装置にいえることである）
+    -   そのため、高い発現遺伝子は安定的に定量されるが、低い遺伝子については技術的ノイズによって、測定の信頼性は低く、そこから得られる変動解析の結果も、多くの偽陽性を含む一因となる
+
+-   そこで、発現量が多くて信頼性の高いデータには大きな重みを、発現量が少なくて不安定なデータには小さな重みを与えられないかを考える必要が生じる
+
+-   各サンプルに対して、発現量に基づく**精度重み** $w_{ij}$ を定義する
+
+-   この重みは、**発現量が大きい遺伝子に対して高い信頼性**を与え、発現量が小さい遺伝子は**低い重み**を持たせる。voomと呼ばれる方法では、重みは以下の式で計算される：
+
+    $$
+    w_{ij} = \frac{1}{\hat{\sigma}^2_{ij}}
+    $$
+
+    ここで、$\hat{\sigma}^2_{ij}$ は遺伝子 $i$ におけるサンプル $j$ の推定された分散である
+
+-   voomでは、発現量 $y_{ij}$ に依存して分散が変化するため、分散が大きいほど重みは小さくなる。
+
+-   分散は、発現量の平均に対して次のように推定される：
+
+$$
+\log(\hat{\sigma}^2_{ij}) = a + b \log(\bar{y}_i)
+$$
+
+-   ここで、$\bar{y}_i$ は遺伝子 $i$ の平均発現量、$a$ と $b$ は回帰モデルによって推定された定数である
+
+-   このモデルは、カウントデータの分散が平均に依存することを反映している
+
+-   重み付きの対数変換データ $y'_{ij}$ に基づいて、線形モデルをフィッティングし、発現変動解析が行われる
+
+### Voomアルゴリズム
+
+-   以上の考え方を実装しているものの一つがVoomアルゴリズム
+
+-   実際にvoom()関数の内部で動いている主要なステップに沿って見てみよう
+
+-   単に関数名をコンソールに入力すれば、関数の中身をみることができる
+
+    ```{r}
+    voom
+    ```
+
+    以下では、主な部分を抜粋して内部で計算されるアルゴリズムの概要を説明する
+
+1.  対数変換と正規化
+
+```{r,eval=FALSE}
+y <- t(log2(t(counts + 0.5)/(lib.size + 1) * 1e+06))
+```
+
+上のコードを式で表すと以下のようになる。
+
+$$
+y_{ij} = \log_2 \left( \frac{\text{counts}_{ij} + 0.5}{\text{lib.size}_j + 1} \times 10^6 \right)
+$$
+
+-   **カウントデータの補正**：$\text{counts}_{ij} + 0.5$ によって、カウントデータに0.5を加え、ゼロカウントに対処。
+
+-   **ライブラリサイズでの正規化**：$\frac{\text{counts}_{ij} + 0.5}{\text{lib.size}_j + 1}$ によって、サンプルごとのライブラリサイズを考慮して発現量を標準化。
+
+-   **CPM（Counts Per Million）への変換**：$\times 10^6$ によって、カウントデータを100万あたりのリード数に変換する。これにより、異なるサンプル間のスケールが統一される。
+
+-   **対数変換**：最終的に $\log_2$ を取ることで、カウントデータを対数スケールに変換する。
+
+2.  発現量の期待値（平均）と分散の計算
+
+```{r,eval=FALSE}
+fit <- lmFit(y, design,25)
+sx <- fit$Amean + mean(log2(lib.size + 1)) - log2(1e+06)
+sy <- sqrt(fit$sigma)
+```
+
+-   ここでは、遺伝子ごとに平均値と分散を計算する。
+
+-   ただし、voomでは単に平均値と分散を計算するのではなく、実験条件の違いから予測される期待値と予測誤差（残差）を代わりに用いる。
+
+    -   可能な限り、対象とする実験対象と整合性のある平均値と分散を用いるという考え方によるものと思われる。
+
+    -   
+
+-   まず、1行目のlmFit()では、`y`（遺伝子発現データの対数変換された行列）に対して、`design`（実験条件を表すデザイン行列）を使って線形モデルを適用している（デザイン行列については後述）。
+
+$$
+y_{ij} = \beta_0 + \beta_1 x_{1j} + \beta_2 x_{2j} + \dots + \beta_k x_{kj} + \varepsilon_{ij}
+$$
+
+-   $y_{ij}$：遺伝子 $i$ におけるサンプル $j$ の発現量（対数変換後の値）。
+-   $\beta_0, \beta_1, \dots, \beta_k$：線形モデルのパラメータ（回帰係数）。
+-   $x_{1j}, x_{2j}, \dots, x_{kj}$：デザイン行列の要素（サンプル $j$ の実験条件に対応する共変量）。
+-   $\varepsilon_{ij}$：モデルの残差（誤差項）。
+
+この線形モデルにおける計数の意味は、実験条件の効果（言い換えればサンプル間の発現量の差異）であり、そのモデル化から予測される値は、遺伝子\$i\$の発現量の期待値となる。
+
+-   ２行目の`sx` は、ステップ１で正規化された発現量の対数変換に対する補正を元に戻してカウント値に戻すような作業をしている。
+-   `fit$Amean + mean(log2(lib.size + 1)) - log2(1e+06)` は、以下の式で表される
+
+$$
+sx_i = \text{Amean}_i + \left( \frac{1}{n} \sum_{j=1}^{n} \log_2 (\text{lib.size}_j + 1) \right) - \log_2(10^6)
+$$
+
+-   $sx_i$：遺伝子 $i$ の補正後の平均発現量。
+-   $\text{lib.size}_j$：サンプル $j$ のライブラリサイズ。
+-   $\log_2(10^6)$：Counts per Million (CPM) に基づくスケーリング定数。
+
+この式は、各遺伝子のAmeanに対して、サンプルごとのライブラリサイズの対数平均を加えた後、スケールをCPMに合わせるために $\log_2(10^6)$ を引いている。
+
+言い換えれば、ステップ１でライブラリサイズで割り算したものを掛け合わせて、また100万単位にするために掛け合わせたものを割っている（対数の足し算は掛け算、引き算は割り算であることを思い出そう）。ステップ１の対数変換は、あくまで遺伝子発現量の期待値を予測するための線形モデルを適用できるようにするためのだけの操作であったので、期待値を算出した後は、元々の尺度に再び戻したという解釈である。
+
+-   ３行目の`sy` は、各遺伝子 $i$ の残差の分散 $\sigma_i^2$ の平方根、すなわち**標準偏差**を表す。
+
+$$
+sy_i = \sqrt{\hat{\sigma}_i^2}
+$$
+
+-   $sy_i$：遺伝子 $i$ の残差の標準偏差。
+-   $\hat{\sigma}_i^2$：遺伝子 $i$ の残差の分散。 線形モデルでのフィッティング後、各遺伝子 $i$ における残差の分散 $\hat{\sigma}_i^2$ を計算し、その平方根を取ることで、標準偏差 $sy_i$ を求めている。
+
+3.  分散のノイズフィルタと精度行列の計算
+
+```{r,eval=FALSE}
+l <- lowess(sx, sy, f = span)
+f <- approxfun(l, rule = 2, ties = list("ordered", mean))
+w <- 1/f(fitted.logcount)^4
+dim(w) <- dim(fitted.logcount)
+```
+
+-   ステップ2で計算したsyから精度行列を計算できるように思われるが、voomではもう一手間かける。
+-   それは、RNA-Seqデータにおける発現量と分散の関係が非線形であるためである。 　
+-   先ほど推定した分散syは線形回帰モデルから導出したため、線形な関係のみ捉えており複雑な関係を捉えきれない
+-   そこで、推定した発現量（平均）と分散に基づいて、さらに非線形なパターンを柔軟に捉えることができる局所回帰（LOWESS）モデルを当てはめて、非線形な発現量と分散の関係に基づく分散を推定する
+    -   LOWESS平滑化は、各データポイントに対して、その周辺のデータ点に重みをつけてローカルな回帰を行い、その点での値を予測する。重みは通常、データ点からの距離に基づいて計算され、近い点ほど重みが大きく、遠い点ほど重みが小さくなる。
+    -   この手法を使うことで、データ全体にわたる非線形な関係を反映したスムーズな曲線モデルを構築して、分散を予測できる。
+    -   lowess()にsx, syを入力することで、両者の関係をモデル化している
+-   ２行目の`approxfun()`はlowessを用いて予測できるようにするための関数を構築している
+-   ３行目は、構築したloewssで当てはめたモデルを用いて、対数カウントで表された発現量を入力して、その逆数、すなわち精度行列を算出している
+
+4.  最終的な出力（遺伝子発現の期待値と精度行列＋α）
+
+```{r,eval=FALSE}
+out$E <- y
+out$weights <- w
+out$design <- design
+new("EList", out)
+```
+
+```{r,eval=FALSE}
+design <- model.matrix(~dge$samples$group)
+vfit <- voom(dge,design = design)
+vfit
+```
+
+-   plotSAは平均（横軸）-分散（縦軸）をプロットしてトレンドの有無を確認するための関数
+-   次に述べる線形モデルのフィッティングをしたのち描画できる
+-   以下は１行でかけるように関数組み合わせた書き方である。
+
+``` r
+plotSA(lmFit(vfit))
+```
+
+-   トレンドがないのがわかる
+
+### その他の前処理について
+
+このほかにも、いくつかの検討すべき事項がある
+
+-   異常サンプルの検出
+
+-   バッチ効果の検出と補正
+
+# 遺伝子発現変動解析
+
+## 線形モデルのフィッティング
+
+-   一通りの前処理が終わり、ようやく群間比較を行うことになる。
+
+-   転写物 / 遺伝子単位で群間比較を行うのが一般的である
+
+-   すなわち、群間で顕著な違いのある転写物 / 遺伝子群を特定することが最初の目標である
+
+    -   ただし、実際には複数の遺伝子発現変動が１つの機能的単位となってある機能異常を発現すると考えるのが自然である。
+
+    -   その点については、このあとの遺伝子セット解析と呼ばれる方法で、機能的カテゴリに基づいた変動遺伝子の特徴づけを行うことになる。
+
+```{r,eval=FALSE}
+fit <- lmFit(vfits)
+```
+
+-   `lmFit` は線形モデルを各遺伝子に対して適用し、**サンプル間の発現差をグループ（実験条件）ごとに評価**する。
+
+-   各遺伝子 $i$ に対して次のように定義される：
+
+$$
+y_{ij} = \beta_0 + \beta_1 x_{1j} + \beta_2 x_{2j} + \dots + \beta_k x_{kj} + \varepsilon_{ij}
+$$
+
+-   $y_{ij}$：遺伝子 $i$ のサンプル $j$ における対数発現量。
+
+-   $\beta_0, \beta_1, \dots, \beta_k$：線形モデルの回帰係数（各グループに対する発現差を示すパラメータ）。
+
+-   $x_{1j}, x_{2j}, \dots, x_{kj}$：デザイン行列の要素（サンプルの実験条件を表す共変量）。
+
+-   $\varepsilon_{ij}$：モデルの誤差項。
+
+-   `lmFit` は、この線形モデルに基づいて、サンプルごとの発現量をグループ間でどのように変動するかを推定する。
+
+-   ここでは、各遺伝子 $i$ において、グループ間（例: コントロールと処理）の発現差を説明するパラメータ $\beta_1, \beta_2, \dots$ を求めている。
+
+## **経験ベイズ法による発現変動の調整**
+
+-   生物学的実験では、特にRNA-Seqのような大規模データセットで、通常、数千〜数万の遺伝子を同時に解析するが、\*\*サンプル数（標本数）\*\*が少ない場合が少なくない。いわゆる"n=3"という、もはや統計学の問題となりうるか瀬戸際のサンプルサイズで比較しなければならない。
+
+-   一般的には標本サイズが小さい場合、個々の遺伝子の分散（ばらつき）の推定が不安定になる可能性がある
+
+-   標本サイズが小さいと、分散の推定値は真の分散から大きく外れやすくなる。例えば、ある遺伝子の分散が実際には小さいにもかかわらず、少数のサンプルから得られたデータだけで見ると分散が大きく見えることがある。
+
+-   ある遺伝子が群間で差があるかを表した検定統計量(t統計量）を記述してみよう。先ほど線形モデルで当てはめて得られた群に対応する回帰係数$\beta_j$は、ベースラインとグループ$j$ とのの遺伝子発現量の差を表す
+
+    -   各遺伝子 $i$ について、グループ間で発現の差があるかどうかをt検定によって評価する。t統計量 $t_i$ は次のように計算される
+
+        $$
+        t_i = \frac{\hat{\beta}_1}{\hat{\sigma}_i}
+        $$
+
+        -   $\hat{\beta}_1$ は線形モデルで推定されたベースラインとグループ1間の発現差の推定値（係数）。
+
+        -   $\hat{\sigma}_i$ は遺伝子 $i$ の線形モデルの残差の標準誤差。
+
+-   遺伝子$i$の**t検定統計量は分散に依存**していることがわかる。
+
+    -   したがって\*\*不安定な分散推定\*\*に基づいて発現変動解析を行うと、偽陽性や偽陰性の結果が多く生じ、信頼性が低下してしまうのは明らか
+
+    -   **eBayes（empirical Bayes、経験ベイズ法）**は、このようなばらつきの不安定さを解決するために用いられる。
+
+    -   このアプローチは、全ての遺伝子の情報を活用して、**各遺伝子ごとの分散推定を安定化させる**ための方法である。
+
+        -   具体的には、ベイズ的なアプローチを用いて、遺伝子間の共通の分散（全体的な分散の傾向）を組み合わせ、個々の遺伝子の分散を推定する。
+
+### **ベイズ推定の基本**
+
+-   ベイズ推定の基本的な考え方は、**事後分布**を計算することである。
+
+-   事後分布は、事前分布と尤度の積で与えられる。
+
+-   あるパラメータ $\theta$ の事後分布は次のように書ける：
+
+$$
+P(\theta | y) = \frac{P(y | \theta) P(\theta)}{P(y)}
+$$
+
+-   $P(\theta | y)$：事後分布（データ $y$ を観測した後の $\theta$ の分布）
+
+-   $P(y | \theta)$：尤度（観測されたデータが与えられたときの、パラメータ $\theta$ に関する尤度）
+
+-   $P(\theta)$：事前分布（データ観測前の $\theta$ に関する先験的な知識）
+
+-   $P(y)$：データ $y$ の事前確率
+
+### **分散推定に対するベイズ推定の適用**
+
+経験ベイズ法では、各遺伝子 $i$ に対する分散 $\sigma_i^2$ を推定する。ここで、以下の前提に基づく：
+
+1.  **各遺伝子の分散** $\sigma_i^2$ を、全遺伝子に共通する事前分布を持つベイズモデルとして扱う。
+
+2.  **個々の遺伝子ごとに観測された分散** $\hat{\sigma}_i^2$ は、正規分布に従うと仮定する（この観測分散は、線形モデルの残差から得られる分散の推定値）。
+
+-   ベイズ推定では、個々の遺伝子の分散推定 $\hat{\sigma}_i^2$ と、事前分布に基づく共通分散 $\sigma_0^2$ の両方を組み合わせて、新しい分散推定 $\hat{\sigma}_{i,\text{adj}}^2$ を導出する。
+
+### **事前分布と事後分布の組み合わせ**
+
+-   事前分布として、すべての遺伝子が共通の分散 $\sigma_0^2$ を持つと仮定する。
+
+-   この共通分散に対して、**事前自由度** $d_0$ を設定する。事前分布は、以下のように表される。
+
+$$
+\sigma_0^2 \sim \text{Inverse-Gamma}(d_0 / 2, d_0 \sigma_0^2 / 2)
+$$
+
+ここで、$d_0$ は共通分散に対する信頼度を表すパラメータである。
+
+-   一方、個々の遺伝子 $i$ に対する観測分散 $\hat{\sigma}_i^2$ は、以下のようにモデル化される。
+
+$$
+\hat{\sigma}_i^2 \sim \text{Inverse-Gamma}(d_i / 2, d_i \hat{\sigma}_i^2 / 2)
+$$
+
+ここで、$d_i$ は個々の遺伝子の自由度を表す。
+
+### **事後分布による調整**
+
+-   事前分布と観測された分散から、事後分布に基づいて調整された分散推定値 $\hat{\sigma}_{i,\text{adj}}^2$ は次のように得られる。
+
+$$
+\hat{\sigma}_{i,\text{adj}}^2 = \frac{d_0 \sigma_0^2 + d_i \hat{\sigma}_i^2}{d_0 + d_i}
+$$
+
+-   $d_0 \sigma_0^2$ は、共通分散（事前分布）から得られる情報に基づく分散の推定部分。
+
+-   $d_i \hat{\sigma}_i^2$ は、個々の遺伝子 $i$ のデータ（観測された分散）から得られる情報に基づく分散の推定部分。
+
+この式は、個々の遺伝子の観測分散と全体の共通分散のバランスを取り、どちらの情報も考慮した分散推定値を計算する。
+
+-   $d_0$ が大きければ、共通分散 $\sigma_0^2$の影響が大きくなり、全体の分散に引き寄せられる。これは、標本サイズが小さく、観測された分散が不安定な場合に特に有効である。
+
+-   一方、$d_i$ が大きければ、個々の遺伝子の観測分散 $\hat{\sigma}_i^2$ の影響が大きくなる。これは、標本サイズが大きく、観測分散が信頼できる場合である。
+
+いいかえれば、以下のように解釈できる。
+
+-   **小標本サイズの場合**：標本サイズが小さい遺伝子については、個々の遺伝子の推定分散が不安定であるため、全体の共通分散（$\sigma_0^2$）の影響が強くなる。これにより、極端な分散推定を防ぎ、信頼性を向上させる。
+
+-   **大標本サイズの場合**：標本サイズが大きい遺伝子については、個別の分散推定が比較的安定しているため、その推定がほぼそのまま使われる（共通分散の影響は小さくなる）。
+
+### **経験ベイズの利点と必要性**
+
+-   **分散の安定化**：経験ベイズ法では、標本サイズが小さい場合でも、分散推定が極端にばらつくのを防ぐ。全体の共通分散を取り入れることで、個別の遺伝子ごとの分散推定が不安定な場合でも、信頼性の高い推定が可能になる。
+
+-   **パワーの向上**：分散推定が安定することで、真に変動している遺伝子を検出する能力（パワー）が向上する。
+
+# 演習13 経験ベイズによる統計量の調整
+
+以下の関数で計算できる
+
+```{r,eval=FALSE}
+fit <- eBayes(fit)
+```
+
+`eBayes`関数は、以下の二つの計算を行う。
+
+1.  **ベイジアン縮小による標準誤差の調整**： 遺伝子ごとの分散推定を**ベイズ縮小**によって調整する。これにより、特にサンプルサイズが小さい場合でも、分散推定が安定化する。
+
+2.  **p値の計算**： 各遺伝子 $i$ に対するt統計量に基づいて、対応するp値 $p_i$ を計算する。
+
+$$
+p_i = P(T > |t_i|)
+$$
+
+ここで、$T$ はt分布に従う確率変数である。p値が小さいほど、グループ間の発現差が統計的に有意であることを示す。
+
+-   **FDRによる多重検定補正**： 発現変動解析では、多くの遺伝子について同時に検定を行うため、多重検定補正が必要。`eBayes` では、**false discovery rate (FDR)** による補正を行い、有意な発現変動遺伝子を特定。
+
+    FDR補正されたp値 $q_i$ は次のように計算される。
+
+    $$
+    q_i = \frac{p_i \cdot N}{\text{rank}(p_i)}
+    $$
+
+    ここで、$N$ は総遺伝子数、$\text{rank}(p_i)$ は $p_i$ の順位。
+
+# デザイン行列の考え方
+
+-   すでに何度か出現しているデザイン行列について理解を深めていこう。
+
+-   まず、デザイン行列とは何かというと、何と何を比較するのかを線形回帰モデルの中で表す数学的な表現方法である。
+
+-   デザイン行列を正しく設定できるかがlimmaを用いた変動解析の重要要素の一つである。
+
+-   まずは簡単な例から始めていこう。
+
+    -   コントロール群と処置群の二群比較をする最も単純なデザインを想定する。
+
+    -   知りたいのは処置群で発現量が変化した遺伝子はどれかということである。
+
+    -   これをlimmaでは、条件をコントロール群(1を割り当てる)か処置群(0を割り当てる)を表す説明変数$x_{ij}$として、目的変数に遺伝子発現量$y_{ij}$として線形回帰モデルに組み込む。
+
+    -   このようにすることで、回帰係数を変動量として解釈できるモデルが出来上がる。
+
+    -   回帰モデルは以下のようになる。
+
+$$
+y_{ij} = \beta_0 + \beta_1 x_{ij} + \varepsilon_{ij}
+$$
+
+ここで：
+
+-   $y_{ij}$：遺伝子 $i$ におけるサンプル $j$ の発現量。
+
+-   $\beta_0$：コントロール群の平均発現量。
+
+-   $\beta_1$：グループ間の発現差（処理群の効果）。
+
+-   $x_{ij}$：サンプル $j$ が処理群に属していれば $1$、そうでなければ $0$ 。
+
+-   $\varepsilon_{ij}$：誤差項。
+
+### **デザイン行列での表現**
+
+-   デザイン行列とは、$\beta_0$ と$\beta_1$を 行列形式で表したものである。つまり、$x_{ij}$ に対応する部分をデザイン行列として表現する。
+
+    -   なぜ、行列形式で表現する必要があるのかというと、最小二乗法は、数学的には行列演算で非常に効率的に解けるからである。
+
+-   サンプル $j$ の発現量 $y_j$ に対するモデルは次のように書き直せる：
+
+$$
+\mathbf{y} = X \beta + \varepsilon
+$$
+
+ここで： $$
+\mathbf{y} = \begin{pmatrix} y_1 \\ y_2 \\ y_3 \\ y_4 \end{pmatrix}, \quad
+X = \begin{pmatrix} 1 & 0 \\ 1 & 0 \\ 0 & 1 \\ 0 & 1 \end{pmatrix}, \quad
+\beta = \begin{pmatrix} \beta_0 \\ \beta_1 \end{pmatrix}, \quad
+\varepsilon = \begin{pmatrix} \varepsilon_1 \\ \varepsilon_2 \\ \varepsilon_3 \\ \varepsilon_4 \end{pmatrix}
+$$
+
+-   ここで、$X$ はサンプルのグループ情報を表すデザイン行列で、1列目がコントロール群、2列目が処理群に対応する。
+
+-   この線形モデルをフィッティングすると、$\beta_0$ はコントロール群の平均発現量、$\beta_1$ はコントロール群と処理群の間の平均発現差を表す
+
+-   このようにして、デザイン行列を使うことで、グループごとの効果をモデルに組み込むことができる。
+
+### **一般的表現**
+
+-   さらに、線形モデルを一般的に表現すると、以下のようになる
+
+$$
+y = X \beta + \varepsilon
+$$
+
+ここで
+
+-   $y$：観測された応答変数のベクトル（例えば、各サンプルの遺伝子発現量）。
+
+-   $X$：デザイン行列（実験条件やグループを表す行列）。
+
+-   $\beta$：係数ベクトル（各共変量に対する効果を示すパラメータ）。
+
+-   $\varepsilon$：誤差項。
+
+これを最小二乗法を用いて次のように推定することができる：
+
+$$
+\hat{\beta} = (X^\top X)^{-1} X^\top y
+$$
+
+ここで：
+
+-   $\hat{\beta}$ は推定された回帰係数ベクトル。
+
+-   $X^\top$ はデザイン行列の転置行列。
+
+-   $X^\top X$ はデザイン行列の自己積。
+
+-   $y$ は観測された発現データのベクトル。
+
+Rでは行列演算を非常に効率的に行うための関数が数多く用意されいるため、上記の計算は容易である。
+
+### 差の表現
+
+-   デザイン行列は比較対象のグループを線形モデルの変数に含めるための数学的表現であった
+
+-   したがって、発現量に対して各グループがどれくらいの寄与をしているのか推定したいのかを表したモデルである
+
+-   しかし、実際には「変動」解析が目的である。つまり、各々のグループの寄与度は知ることはできるが、グループ間の寄与度の「差」、つまり群間の差を必ずしも推定していることにはならない
+
+-   そこで「差」を推定するためには、どのようにデザイン行列に基づいてモデル化すればよいのかが問題になる
+
+-   二つの考え方がある
+
+    1.  全体のベースライン（平均）を表した切片をデザイン行列に組み込んでしまい、各グループの寄与度に対して推定された係数の意味を、「ベースラインからの差分」という解釈が可能なモデルにしてしまう
+
+    2.  コントラスト行列を用いて、明示的に各グループに対して推定された寄与度の差を計算する
+
+-   切片を用いる方法はここでは詳しく立ち入らず、終わりの方に補足的に説明する
+
+#### コントラスト行列の考え方
+
+-   先ほどの例を再考してみよう。
+
+-   2つのグループ（コントロール群と処理群）がある場合、デザイン行列は次のように表せる。
+
+$$
+X = \begin{pmatrix}
+1 & 0 \\
+1 & 0 \\
+0 & 1 \\
+0 & 1 \\
+\end{pmatrix}
+$$
+
+ここで：
+
+-   1列目はコントロール群の効果を表し、コントロール群のサンプルに1が割り当てられる。
+
+-   2列目は処理群の効果を表し、処理群のサンプルに1が割り当てられる。
+
+-   この場合、線形モデルは次の形になる：
+
+$$
+y_j = \beta_1 x_{\text{control},j} + \beta_2 x_{\text{treatment},j} + \varepsilon_j
+$$
+
+-   $\beta_1$ はコントロール群の平均発現量。
+-   $\beta_2$ は処理群の平均発現量。
+-   $x_{\text{control},j}$ と $x_{\text{treatment},j}$ は、サンプル $j$ がどのグループに属しているかを示すダミー変数。
+
+ここで量的に差を計算したい対象は$\beta_1 - \beta_2$である。そこで、コントラスト行列を導入する。
+
+#### コントラスト行列の作成
+
+-   コントロール群と処理群の発現量の差を評価するための**コントラスト行列**は次のように定義される：
+
+$$
+\text{contrast} = \begin{pmatrix} 1 & -1 \end{pmatrix}
+$$
+
+-   1列目の「1」はコントロール群を指し、2列目の「-1」は処理群を指す。このコントラスト行列により、コントロール群と処理群の発現量の差 $\beta_1 - \beta_2$ を求めることができる。
+
+#### **効果の推定**
+
+コントラスト行列 $C$ を用いて、コントラストされた効果（群間の差）を次のように計算する：
+
+$$
+C \hat{\beta} = (1, -1) \begin{pmatrix} \hat{\beta}_1 \\ \hat{\beta}_2 \end{pmatrix} = \hat{\beta}_1 - \hat{\beta}_2
+$$
+
+ここで：
+
+-   $\hat{\beta}_1$ はコントロール群の推定平均発現量。
+
+-   $\hat{\beta}_2$ は処理群の推定平均発現量。
+
+コントラストされた効果 $\hat{\beta}_1 - \hat{\beta}_2$ は、グループ間の差を表す。
+
+#### **t統計量の計算**
+
+-   コントラストされた効果 $\hat{\beta}_1 - \hat{\beta}_2$ の推定値に対する**t統計量**を以下のように計算することができる。
+
+$$
+t = \frac{\hat{\beta}_1 - \hat{\beta}_2}{\sqrt{\sigma_1^2 + \sigma_2^2}}
+$$
+
+-   それぞれの係数のt統計量が以下のようになっていたことと比較してみると、分散もそれぞれの分散の和（二乗平方和）となっていることがわかる。
+
+$$
+t_i = \frac{\hat{\beta}_1}{\hat{\sigma}_i}
+$$
+
+-   したがって、群間の変動解析では、それぞれの群の分散を多過ぎず、少な過ぎず推定できることがより良いp値を導出するために不可欠であることが再び理解できるだろう。
+
+-   このt統計量は、経験ベイズによって同様に補正される
+
+    -   つまり実際には、分母の各分散は経験ベイズによって事後推定された分散に置き換わえて用いる
+
+#### なぜ分散が足し合わされるのか？（補足説明）
+
+-   ちなみに、なぜ引き算をすると分散が足し合わされるのか？というのには、線形モデルが仮定している前提条件から理論的に導出されている。
+
+    -   線形モデルを用いるということは、遺伝子ごとの（変換された）発現量のばらつきが、ある正規分布に従うことを仮定している。
+
+    -   そしてまた、そのモデルにおける係数の推定誤差も正規分布に従う。つまり、$\hat{\beta}_1$と$\hat{\beta}_2$はそれぞれ、線形モデルの前提条件から正規分布に従う（ことが強要されている）。
+
+-   このとき重要なのが、正規分布に従う変数同士を足し算、引き算した際に、その新たな足し算、引き算の変数はどのような分布に従うのか？という問題である。
+
+    -   これは**正規分布の再生性**という性質で答えられることが統計理論によって証明されている。
+
+        -   すなわち、正規分布に従う変数同士の足し算、引き算は、それぞれ平均が足し算、引き算になり、また分散はいずれも足し合わされたものになる、というものである。
+
+        -   この正規分布の性質によって、はじめて変数同士の足し算、引き算の確率的ばらつきを予測することが可能になる。
+
+行列の形式では以下のように表現でき、計算を効率的に行うことができる：
+
+$$
+t = \frac{C \hat{\beta}}{\sqrt{\text{Var}(C \hat{\beta})}}
+$$
+
+ここで
+
+-   $C \hat{\beta}$ はコントラストによって推定された群間の差 $\hat{\beta}_1 - \hat{\beta}_2$。
+
+-   $\text{Var}(C \hat{\beta})$ は群間の差の分散。
+
+### 複数要因の場合
+
+-   ２群間比較についてのデザイン行列とコントラスト行列の考え方を応用していけば、単にグループ間の比較だけでなく、複数の要因（例：処理、時間、性別など）を同時に考慮することも可能であることは容易に想像できる。
+
+-   例えば、3つの実験条件（処理1、処理2、コントロール）がある場合、次のようにデザイン行列を拡張すればよい
+
+$$
+X = \begin{pmatrix}
+1 & 0 & 0 \\
+1 & 0 & 0 \\
+0 & 1 & 0 \\
+0 & 1 & 0 \\
+0 & 0 & 1 \\
+0 & 0 & 1 \\
+\end{pmatrix}
+$$
+
+ここでは：
+
+-   1列目がコントロール群
+
+-   2列目が処理1群
+
+-   3列目が処理2群に対応している。
+
+#### コントラスト行列
+
+-   ここでは仮に、３パターンの発現量の変化を比較することを考えよう（常に全ての組み合わせを比較しなくてもよく、必要な比較のみを考えればよい）
+
+    -   処理１ーコントロール
+
+    -   処理２ーコントロール
+
+    -   処理１ー処理２
+
+-   このときのコントラスト行列はどのようになるのか？
+
+    -   処理1 vs コントロール：$\text{contrast}_1 = \begin{pmatrix} -1 & 1 & 0 \end{pmatrix}$
+
+    -   処理2 vs コントロール：$\text{contrast}_2 = \begin{pmatrix} -1 & 0 & 1 \end{pmatrix}$
+
+    -   処理1 vs 処理2：$\text{contrast}_3 = \begin{pmatrix} 0 & 1 & -1 \end{pmatrix}$
+
+-   コントラスト行列を使えば、各比較に対する効果を次のようにモデル化できる：
+
+$$
+C \hat{\beta} = \begin{pmatrix} \text{contrast}_1 \\ \text{contrast}_2 \\ \text{contrast}_3 \end{pmatrix} \hat{\beta}
+$$
+
+-   ここで、$\hat{\beta}$ は線形モデルによって推定された係数ベクトルである
+
+-   それぞれのコントラストに対応する効果の差を評価できる。
+
+#### より高度なデザイン行列の設計をしたい人のための参考文献
+
+-   [A guide to creating design matrices for gene expression experiments](https://bioconductor.org/packages/release/workflows/vignettes/RNAseq123/inst/doc/designmatrices.html)をお勧めする。
+
+    -   実用的なデザイン行列の作成方法について可能な限り包括的に記載している。本講義を聞いて、より自身の研究デザインに対応した解析フローについて理解を深めたい方は、参考にすることおすすめする。
+
+# 演習14　デザイン行列、コントラスト行列の設計と変動解析
+
+```{r}
+group <- factor(meta_info$group)
+design <- model.matrix(~0 + group)
+design
+```
+
+```{r}
+contr <- makeContrasts(contrasts = c("group2-group1", "group3-group1", "group2-group1"),
+                       levels = colnames(design))
+contr
+```
+
+-   これらのデザイン行列とコントラスト行列を、あらためてlimmaのワークフローに組み込む
+
+-   デザイン行列が必要となるのは、既出のvoomのところである
+
+    -   先ほどの例は、デザイン行列について意識しない説明をしていた（切片ありのモデル）
+
+    -   あらためて構成したデザイン行列を用いてvoomを適用する
+
+```{r}
+vfit <- voom(dge,design = design)
+vfit
+```
+
+-   この段階では、デザイン行列は、精度行列に必要な分散を算出するための発現量期待値（予測値）を線形モデルで得るために必要な情報である
+
+-   voomの次は、それぞれの群の効果量を線形モデルを用いて推定する
+
+    -   実はvoomの段階で推定されているため、voomの結果を用いていることがソースコードをみるとわかる
+
+    -   多くの説明マニュアルは、voomとlmfitの両方でデザイン行列designを指定しているが、voomと同じものを用いるのであれば、lmFitで再び指定する必要はない（内部的にはスキップされている）
+
+```{r}
+fit <- lmFit(vfit)
+fit
+```
+
+-   次に得られた線形モデルから得られた各群の効果量（回帰係数）を用いて、コントラスト行列に基づく差の統計量を構成して、統計的仮説検定を行う
+
+```{r}
+fit <- contrasts.fit(fit = fit,contrasts = contr)
+fit
+```
+
+-   最後に、経験ベイズによる分散縮小を行い、最終的な変動解析の結果を計算する
+
+```{r}
+fit <- eBayes(fit)
+fit
+```
+
+# 多重検定補正（p値の補正）
+
+### 多重検定補正の必要性と方法
+
+-   遺伝子発現解析のように何千もの遺伝子について発現変動遺伝子（DEGs）を検出する場合、個々のp値に基づいて単純に有意かどうかを判断すると、偶然に統計的に有意とされる遺伝子が多数出現してしまう可能性がある。
+
+    -   これは**多重検定**の問題と呼ばれる
+
+-   一般的には複数の仮説検定を同時に行う際に、**偽陽性率（Type I error）**を抑えるために**多重検定補正**が必要とされる。
+
+-   例
+
+    -   ある遺伝子が変動しているかどうかを判定する際に、p値の有意水準を $\alpha = 0.05$ と設定する
+
+    -   この場合、偶然5%の確率で誤って有意とされる可能性がある。
+
+    -   しかし、10,000個の遺伝子について独立した検定を行うと、500個程度が偶然に有意とされる可能性があることを意味する。
+
+### 多重検定補正の方法
+
+-   多重検定補正には、いくつかの標準的な手法が存在する
+
+-   limmaの `topTable` 関数では、以下の多重補正手法をサポートしている。
+
+1.  **Bonferroni補正**：
+
+    -   最も保守的な方法で、全体の有意水準を検定の数で割る。
+
+    -   これはp値をそのまま $p_{\text{adjusted}} = p \times n$ で補正する方法。
+
+    -   偽陽性率は厳しく制御されるが、検出力が低くなりがち。
+
+2.  **Benjamini-Hochberg法 (FDR補正)**：
+
+    -   偽発見率（False Discovery Rate, FDR）を制御するための方法
+
+    -   偽陽性をある程度許容しつつ、多くの有意な結果を検出するために使用される。
+
+    -   多くの遺伝子発現解析で推奨される補正方法。
+
+3.  **Holm補正**：
+
+    -   Bonferroni補正の改良版。
+
+    -   検定の数が増えるにつれて少し緩やかな補正を行う。
+
+#### **Bonferroni補正**
+
+-   特徴：
+
+    -   **保守的な補正方法**で、p値を検定の数で割る。
+
+    -   **厳格なエラー制御**を行うため、偽陽性率が極めて低くなる一方で、検出力（有意な結果を検出する力）が低くなることがある。
+
+-   方法：
+
+    -   Bonferroni補正では、検定の数 $m$ に対して、生のp値 $p_i$ を次のように補正：
+
+$$
+p_i^{\text{adjusted}} = p_i \times m
+$$
+
+ここで、
+
+-   $p_i$ は生のp値。
+
+-   $m$ は行った検定の総数（遺伝子の数、または比較の数）。
+
+もし $p_i^{\text{adjusted}}$ が有意水準 $\alpha$ よりも小さい場合、その結果は有意とされる。例えば、有意水準が $\alpha = 0.05$ で、10,000個の遺伝子について検定を行った場合、p値は10,000倍されると考えれば良い。
+
+-   適用する状況：
+
+    -   偽陽性を**極端に**抑えたい場合。
+
+    -   非常に保守的な結果が求められる場合（例えば、臨床試験など）。
+
+-弱点：
+
+```         
+-   補正が厳しいため、検出力が低く、有意な結果を見逃す可能性がある。
+```
+
+#### **Holm補正（Holm-Bonferroni法）**
+
+-   特徴：
+
+    -   Bonferroni補正の改良版で、より**柔軟な補正**を行う。
+
+    -   p値を昇順に並べ、それぞれ異なる基準で補正を行う。
+
+-   方法：
+
+    -   Holm補正では、まずp値を昇順に並べ、それぞれに対して以下の補正を行う：
+
+$$
+p_{(i)}^{\text{adjusted}} = p_{(i)} \times (m - i + 1)
+$$
+
+ここで、
+
+-   $p_{(i)}$ は昇順に並べたi番目のp値。
+
+-   $m$ は検定の総数。
+
+最も小さなp値に対しては最大の補正が適用され、次第に緩やかに補正されていく。この方法では、全体の偽陽性率を制御しつつ、検出力を少し高めることができる。
+
+-   適用する状況：
+
+    -   Bonferroniほど厳しくないが、ある程度のエラー制御が必要な場合。
+
+    -   偽陽性を強く制御しつつも、検出力を確保したい場合。
+
+-   弱点：
+
+    -   依然として保守的で、特に検定数が多い場合には検出力が低下する。
+
+#### **Benjamini-Hochberg法（FDR補正）**
+
+-   特徴：
+
+    -   偽発見率（False Discovery Rate, FDR）を制御する方法で、複数検定の結果における**偽陽性の割合**を抑える。
+
+    -   多くの有意な結果を得たい場合に適しており、遺伝子発現解析などで広く使用される。
+
+-   方法：
+
+    -   Benjamini-Hochberg法は、FDRを制御するための方法で、p値を次のように補正する：
+
+$$
+p_{(i)}^{\text{adjusted}} = \frac{p_{(i)} \cdot m}{i}
+$$
+
+ここで、
+
+-   $p_{(i)}$ は昇順に並べたi番目のp値
+
+-   $m$ は検定の総数
+
+-   $i$ はp値の順位。
+
+この方法は、偽陽性率を制御しつつ、多くの有意な結果を検出できるようにする。特に、**FDRが重要な解析**（例えば、遺伝子発現の発現変動解析）に適している。
+
+-   適用する状況：
+
+    -   偽陽性率を適度に制御しつつ、有意な結果をより多く得たい場合。
+    -   大規模なデータセット（遺伝子発現データやマイクロアレイデータなど）の解析に適している。
+
+-   弱点：
+
+    -   FDRは、エラー率の上限を制御するため、Bonferroni補正に比べて保守的ではない。従って、場合によっては偽陽性が多く含まれる可能性がある。
+
+### **それぞれの特徴と使い分け**
+
+-   **Bonferroni補正**は、エラーのリスクを極力抑えたい場合に適しているが、検出力が低くなりがち。例えば、医療分野などで偽陽性が大きなリスクとなる場合に適用する。
+
+-   **Holm補正**は、Bonferroni補正よりも少し緩やかだが、依然として強いエラー制御を提供。適度なエラー制御が必要であるが、検出力も確保したい場合に使用される。
+
+-   **Benjamini-Hochberg法（FDR補正）**は、検出力を高めたい場合や、大規模データセットに適用する場合に理想的かもしれない。遺伝子発現解析やオミクスデータ解析において、偽陽性率を低く保ちながら、有意な結果を多く得たい場合に使用できる。
+
+# もう一つの多重検定補正
+
+-   複数群間の比較において、たとえば次の3つのペアワイズ比較を行うとする：
+
+1.  処理1 vs コントロール
+
+2.  処理2 vs コントロール
+
+3.  処理1 vs 処理2
+
+-   これらの比較は、それぞれ独立した3つの統計的仮説検定を意味している
+
+-   したがって、これらを同時に行う場合、**多重検定**の問題が生じる
+
+-   つまり、複数の仮説検定を行うと、偶然に有意な結果が得られる可能性（偽陽性）が高くなる
+
+-   これを防ぐために、ここでも多重検定補正が必要。
+
+#### decideTests()について
+
+`decideTests()` 関数は、線形モデルのフィッティング結果から得られた **p値** を用いて、特定の比較（コントラスト）における発現変動が統計的に有意であるかどうかを判断する。
+
+具体的には、以下の手順に従う：
+
+1.  **コントラスト行列**を用いて、複数の群間比較を行う。
+
+2.  各比較に対して得られた統計量（t値やp値）に基づいて、検定を行う。
+
+3.  多重検定補正（例えば、Benjamini-Hochberg法）を適用し、偽陽性を制御する。
+
+4.  各遺伝子について、どの群間比較で有意な発現差があるかを出力する。
+
+# 演習15 多重検定補正
+
+## topTable()関数
+
+-   `topTable()` 関数は、**発現変動解析**の結果を要約して出力するために使用される
+
+-   この関数は、線形モデルのフィッティング（`lmFit()`）およびベイズ推定（`eBayes()`）を行った後、統計的に有意な遺伝子（または遺伝子セット）を抽出し、特定のコントラストに基づいて結果をソートして表示する。
+
+```{r,eval=FALSE}
+topTable(fit, coef=NULL, number=10, genelist=NULL, adjust.method="BH", sort.by="P", p.value=1, lfc=0)
+```
+
+#### 主な引数の説明
+
+-   **`fit`**: 事前に線形モデルをフィッティングしたオブジェクト（例えば、`lmFit()` や `eBayes()` で得られるもの）。
+
+-   **`coef`**: 特定のコントラスト（グループ間比較）に基づいて結果を抽出するための列番号または列名。例えば、`coef=1` で1つ目のコントラスト、`coef="group2-group1"` で「group2 vs group1」の結果を指定。
+
+-   **`number`**: 表示する遺伝子の数。`Inf` を指定するとすべての遺伝子が表示される。
+
+-   **`genelist`**: 遺伝子リストをデータフレーム形式で指定。結果に遺伝子情報（シンボルやIDなど）を追加することができる。
+
+-   **`adjust.method`**: 多重検定補正方法。デフォルトは Benjamini-Hochberg 法（`"BH"`）。他に `"Bonferroni"` や `"Holm"` も使用可能。
+
+-   **`sort.by`**: 結果をソートする基準。デフォルトは `"P"`（p値）。他に `"logFC"`（発現量の対数差）、`"t"`（t統計量）なども指定可能。
+
+-   **`p.value`**: 抽出する結果のp値の上限。有意な結果のみを取得するために使う。デフォルトは `1` で全てのp値が対象。
+
+-   **`lfc`**: log Fold Change（対数発現量差）の下限値を指定することで、変動が大きい遺伝子のみを表示できる。
+
+以下にいくつかの使用例を示す。
+
+#### ソートして上位の結果のみ出力
+
+#### log Fold Changeが大きく、p値が小さい順に上位10遺伝子を出力
+
+```{r,eval=FALSE}
+# p値でソートして上位10遺伝子を抽出
+result_top10 <- topTable(fit, coef=1, number=10, adjust.method="BH", sort.by="P")
+```
+
+#### **すべての遺伝子を表示する場合**
+
+すべての遺伝子を出力するには、`number=Inf` を指定
+
+```{r,eval=FALSE}
+# すべての遺伝子を表示
+result_all <- topTable(fit, coef=1, adjust.method="BH", sort.by="P", number=Inf)
+```
+
+#### **特定のp値以下の結果を抽出**
+
+p値が0.05以下の結果のみを表示したい場合は、`p.value` を指定
+
+```{r,eval=FALSE}
+# p値が0.05以下の結果を抽出
+result_filtered <- topTable(fit, coef=1, adjust.method="BH", sort.by="P", p.value=0.05)
+```
+
+#### **log Fold Change が大きい遺伝子を抽出**
+
+発現量の変動が大きい遺伝子のみを表示したい場合、`lfc` 引数を使う。例えば、log Fold Change が1以上の遺伝子を抽出する。
+
+```{r,eval=FALSE}
+# log Fold Change が1以上の遺伝子を抽出
+result_large_lfc <- topTable(fit, coef=1, adjust.method="BH", sort.by="P", lfc=1)
+```
+
+### `topTable()` の出力内容
+
+`topTable()` の結果はデータフレーム形式で出力され、以下の情報が含まれる：
+
+-   **logFC**: log Fold Change。2つのグループ間の発現量の対数差。
+
+-   **AveExpr**: 平均発現量。
+
+-   **t**: t統計量。
+
+-   **P.Value**: 生のp値。
+
+-   **adj.P.Val**: 多重検定補正後のp値（Benjamini-HochbergやBonferroniなど）。
+
+-   **B**: B統計量（発現変動の可能性を示す指標）。
+
+先ほど変動解析を行なった結果オブジェクトを用いて、group2とgroup1間の結果を出力する。。
+
+```{r}
+# Benjamini-Hochberg補正（FDR補正）
+result <- topTable(fit, coef = "group2-group1",adjust.method = "BH", sort.by="P", number=Inf)
+```
+
+## decideTests()関数
+
+-   `decideTests()` 関数は、**発現変動解析**の結果に基づいて、統計的に有意な遺伝子（あるいは遺伝子セット）を判定するために使用される。
+
+    -   具体的には、**ベイズ推定後の結果**に対して、各遺伝子が**有意に発現変動しているかどうか**を判定し、結果を行列形式で出力する。
+
+-   `eBayes()` の結果から得られた **p値** を使い、有意かどうかの判定を行い、コントラスト間の多重補正を行い、-1（発現量が減少している）、0（発現変動がない）、1（発現量が増加している）のいずれかで返すr。
+
+### 基本的な構文
+
+```{r,eval=FALSE}
+decideTests(fit, method="separate", adjust.method="BH", p.value=0.05, lfc=0)
+```
+
+#### 主な引数の説明
+
+-   **`fit`**: `eBayes()` または `treat()` 関数の結果を含むオブジェクト。
+
+-   **`method`**: 検定方法。以下の3つのオプションがある。
+
+    -   `"separate"`（デフォルト）: 各コントラストごとに別々に検定を行う。
+
+    -   `"global"`: 複数のコントラストに対して全体での検定を行う。
+
+    -   `"nestedF"`: ネストされたF検定を使用して、全体的な有意性を検定する。
+
+-   **`adjust.method`**: p値に対する多重検定補正の方法。`topTable()` と同様に、`"BH"`（Benjamini-Hochberg）、`"Bonferroni"` などが指定できる。
+
+-   **`p.value`**: 有意水準（デフォルトは 0.05）。p値がこれ以下の遺伝子を有意と判断。
+
+-   **`lfc`**: log Fold Change（対数発現量差）のしきい値。`lfc=1` などを指定することで、発現量の変動が一定以上の遺伝子だけを有意と判断。
+
+```{r}
+# 各コントラストに対する有意な遺伝子を判定
+results <- decideTests(fit, method="separate", adjust.method="BH", p.value=0.05)
+```
+
+#### 出力
+
+-   `decideTests()` の結果は、**行が遺伝子、列がコントラスト**の行列形式で返される
+
+-   出力は次のように解釈：
+
+    -   **1**: 対応するコントラストに対して、発現量が有意に**上昇**している遺伝子。
+
+    -   **0**: 対応するコントラストに対して、有意な発現変動はない遺伝子。
+
+    -   **-1**: 対応するコントラストに対して、発現量が有意に**減少**している遺伝子。
+
+### topTable()とdecideTests()の比較
+
+-   この二つの関数は役割が重複する部分があるため、その区別がわかりにくい
+
+-   以下にそれぞれの特徴と違いを表でまとめる
+
+| 特徴                   | `topTable()`                               | `decideTests()`                            |
+|------------------|---------------------------|---------------------------|
+| **主な目的**           | 詳細な統計情報（p値、logFCなど）を取得する | 発現変動の有無（上昇/減少/変動なし）を判定 |
+| **出力形式**           | データフレーム（数値情報）                 | マトリクス（-1, 0, 1 の値）                |
+| **返される情報**       | log Fold Change、p値、t統計量、B統計量など | 発現が上昇、減少、または変動なしを判定     |
+| **適用する解析の粒度** | 特定のコントラストに対して詳細な統計情報   | 複数のコントラストに対して同時に判定可能   |
+| **主な使用目的**       | 有意な遺伝子を特定し、詳細な数値を確認     | 発現変動があるかどうかの概要を把握         |
+| **多重検定補正**       | p値に対して補正を行う                      | p値に基づいて有意かどうかを判定            |
+| **適用シナリオ**       | 結果をリスト化して、注目すべき遺伝子を確認 | 有意な遺伝子の全体像を把握するための概要   |
+
+### **使い分けのポイント**
+
+#### `topTable()` を使う場合：
+
+-   **統計情報を詳細に確認したい**場合。
+
+-   **上位の有意な遺伝子**を数値情報（log Fold Change、p値）に基づいてソートしてリスト化する必要がある場合。
+
+-   特定の条件に基づいて、p値やlogFCでフィルタリングを行い、**重要な遺伝子を抽出**する際に使用する。
+
+#### `decideTests()` を使う場合：
+
+-   **発現量の変動**が有意に**上昇**しているか、**減少**しているかを確認したい場合。
+
+-   複数のコントラストを同時に評価し、遺伝子ごとの**全体的な有意性の概要**を取得する際に有用。
+
+-   **ベン図**などの可視化に使えるシンプルな出力が欲しいときや、次のステップ（例：特定の遺伝子群に注目する）に進むための情報を得たい場合に便利。
+
+# 多重検定補正の落とし穴？（発展的な考察）
+
+-   多重検定補正は、一般的には独立した複数の仮説検定を同時に行う際に、その検定数が多いほど偶然に有意とされる結果（偽陽性）が増える問題を解決するための方法である。しかし、遺伝子発現解析のような**生物学的なコンテクスト**における多重検定では、**遺伝子同士の独立性**を前提とすることが必ずしも適切ではない場合があるだろう。
+
+-   この視点から、遺伝子発現の文脈や**生物学的関係性**を考慮に入れるべきか、そして多重検定補正を適用する合理性について考えを深めてみることは意義があると思われる。
+
+### 1. **遺伝子の相関と独立性の問題**
+
+-   遺伝子発現は、単独の遺伝子が孤立して機能するわけではなく、**遺伝子ネットワークやパスウェイ**に基づいて発現する（システム生物学的な視点）。つまり、遺伝子同士は相互に関連し、特定の疾患や組織の状態において**一連の遺伝子が協調的に発現**していることが多いと考えられる。
+
+このように、**遺伝子の発現は独立ではなく、むしろ相関**していることが多いため、全ての遺伝子に対して独立な仮説検定を行い、多重検定補正を適用することには、以下のような問題が生じるだろう。
+
+#### 生物学的に関連する遺伝子の検定における問題
+
+-   **過度な補正**：相関した遺伝子群について独立した検定とみなしてBonferroni補正などの保守的な補正を適用すると、遺伝子が関連しているにも関わらず、検出力が低下し、有意な結果を見逃す可能性がある。
+
+-   **遺伝子間の依存関係を無視**：発現が協調している遺伝子群において、独立した検定の前提に基づく多重検定補正を行うと、遺伝子の機能的関連性や発現パターンの背後にあるバイオロジーを無視する結果となる可能性がある。
+
+### 2. **文脈に応じた帰無仮説の空間**
+
+遺伝子発現解析では、通常の多重検定補正は「**全ての遺伝子が独立して検定されている**」という仮定の下で行われる。しかし、実際の生物学的コンテクスト（たとえば、特定の疾患や組織など）での発現パターンは、以下のような背景を持ちうる：
+
+-   **特定の疾患に関わるパスウェイの活性化**：ある疾患や状態においては、関連するパスウェイに属する複数の遺伝子が同時に発現する可能性。
+
+-   **組織固有の遺伝子発現パターン**：特定の組織や細胞タイプでの遺伝子発現は、組織固有の遺伝子発現ネットワークに依存しており、全ての遺伝子が一様に発現するわけではない可能性。
+
+これを数式で整理すると、通常の仮説検定では次のような**帰無仮説**を仮定している：
+
+$$
+H_0: \text{各遺伝子の発現はグループ間で有意な差がない}
+$$
+
+しかし、生物学的コンテクストを考慮すると、すべての遺伝子が独立して検定されるべきではなく、むしろ次のように**コンテクストに応じた帰無仮説の空間**を定義する必要があるかもしれない：
+
+$$
+H_0: \text{特定のパスウェイやネットワーク内の遺伝子群は、グループ間で一貫した発現変動を示さない}
+$$
+
+つまり、各遺伝子を個別に検定するよりも、**パスウェイや機能的に関連する遺伝子群**ごとに検定を行うべきではないかという視点が考えられる。この考え方は、多重検定補正の際に生物学的な関連性を反映した調整が必要であることを示唆している。
+
+### 3. **生物学的なコンテクストに焦点を当てたアプローチ**
+
+従来の多重検定補正は全ての遺伝子が独立に振る舞うという前提に基づいているが、次のような**生物学的背景**を考慮した補正アプローチも考えられる：
+
+#### 1) **パスウェイベースの検定**
+
+パスウェイや遺伝子セットを一つの単位として扱い、それに基づいて検定を行う。例えば、**Gene Set Enrichment Analysis (GSEA)** などは、この考え方に基づいており、パスウェイ全体の発現変動を評価することで、個々の遺伝子検定に対する多重検定補正の影響を軽減する。そのほかにも、**固有遺伝子（Eigengene)**と呼ばれる概念もある。これは、パスウェイ上の遺伝子群に対する発現量を統計的に要約した発現量（パスウェイ活性ともいう場合がある）を用いて、パスウェイ単位で条件間の比較をするという分析アプローチである。
+
+#### 2) **依存性を考慮した多重検定補正**
+
+従来のBonferroniやHolm補正は、全ての検定を独立と仮定するが、遺伝子間の依存関係を考慮する補正方法も開発されている。例えば、**Hierarchical Testing** や **Graph-based Testing** などは、遺伝子間の相関を考慮して補正を行う立場をとっている。
+
+正を行うのではなく、全体的な構造を考慮に入れることで、検出力を高めつつ偽陽性を抑えることができる。
+
+### 4. **多重検定補正の合理性を再考するために**
+
+**多重検定補正の合理性**を考える際、以下のポイントに注意する必要がある：
+
+1.  **文脈に応じた仮説設定**：独立した遺伝子ごとの検定が本当に適切かどうかを文脈に応じて考える。遺伝子発現解析では、**パスウェイレベル**や**ネットワークレベル**での仮説設定がより適切な場合も多い。
+
+2.  **関連性を反映した補正手法の使用**：Bonferroniのようにすべての遺伝子を独立とみなす手法よりも、**遺伝子間の依存性を反映**した補正手法を使うことが合理的かもしれない。
+
+3.  **検出力と偽陽性のトレードオフ**：保守的すぎる補正を適用すると、有意な結果を見逃す可能性が高くなる。**検出力**と**偽陽性のリスク**のバランスを考慮する必要がある。
+
+# 変動解析結果を理解するための分析
+
+-   ここまでの解析によって、limmaによる変動解析は区切りとなる。
+
+-   以降は、「変動」した遺伝子群は何を意味しているのか？という問いに答えていくプロセスとなる。
+
+    -   研究デザインの段階であらかじめ検討したい標的の分子や生物学的パスウェイが定まっている場合は、変動解析の結果を検討して仮説と合致しているかの検証を慎重に進める。この場合は、ターゲットの分子群またはパスウェイが一様に変動しているのか否かを統計的に示すことができると、仮説がより強固になるかもしれない
+
+    -   一方、バイオマーカーのような探索的な研究の場合では、まず統計的に変動している候補遺伝子群をいくつかのグループ（クラスターや機能的カテゴリなど）に分類して、それらが群間で変化しているのか、その中の中心的な分子は何かなどを分析しながら、予想外の関連性を有しているような遺伝子や分子ネットワークなど、新たな洞察を与えうる仮説生成を進めていけるかもしれない
+
+    -   特に後者の場合、遺伝子発現量そのものだけでは先に進めないのは明らかである
+
+        -   遺伝子それぞれには、発見された経緯、その後に検証が進められたさまざまな文脈（疾患や組織、実験条件など）を含めた「歴史」、すなわち蓄積された学術的な知識が存在する。
+
+        -   生物学的な意味を検討するという作業は、基本的にはこれらの知識と照らし合わせていく必要
+
+        -   しかし、この作業をある程度までは自動化し、あたりをつけること（推論）は統計的には可能
+
+        -   それを行うための枠組みが、**遺伝子セット解析(Gene Set Analysis; GSA)** と呼ばれるものである。
+
+            -   ただし、遺伝子の発現量が変化したという事実と、それによって生物学的な変化（フェノタイプ）が生じたか否かの因果や直接的な関連性は予測の域を出ないことに注意は必要である。
+
+## 遺伝子セットを用いた分析方法
+
+### 遺伝子セット解析の目的
+
+-   **遺伝子セット解析**では、個々の遺伝子の有意性ではなく、**遺伝子セット全体の傾向**を調べることが主な目的。
+
+-   遺伝子セット解析は次のような質問に答えるために使用される：
+
+    -   **特定の経路や機能が実験条件において活性化されているか？**
+
+    -   **細胞の特定のプロセス（例：炎症反応、細胞増殖）が条件間で違いを示しているか？**
+
+-   これにより、個々の遺伝子の統計的有意性に依存せず、**全体的な生物学的「傾向」**を捉えることができる。
+
+### 遺伝子セットとは
+
+-   **遺伝子セット（Gene Set）** とは、特定の生物学的機能や経路に関連する、あらかじめ定義された遺伝子のグループのことを指す。
+
+-   遺伝子セット解析（GSEAやORAなど）では、個別の遺伝子の発現変動を調べるのではなく、これらのセット全体が実験条件において有意に変動しているかどうかを評価する。
+
+遺伝子セットは、次のような基準に基づいて作成されている（厳密な基準はない）：
+
+1.  **生物学的プロセス**：
+
+    -   遺伝子セットは、特定の生物学的プロセス（例：細胞分裂、免疫応答、細胞死など）に関連する遺伝子群を含んでいる。
+
+    -   例：Gene Ontology（GO）で定義されている「細胞周期に関連する遺伝子セット」など。
+
+2.  **分子経路**：
+
+    -   特定のシグナル伝達経路や代謝経路に関与する遺伝子を含むセット。
+
+    -   例：KEGG経路の「TGF-betaシグナル伝達経路に関連する遺伝子セット」など。
+
+3.  **共通の遺伝子機能**：
+
+    -   共通の分子機能を持つ遺伝子を含むセット。例えば、転写因子やキナーゼに関連する遺伝子群がこれに当たる。
+
+    -   例：「DNA結合に関与する転写因子遺伝子セット」など。
+
+4.  **遺伝子ファミリーや調節ネットワーク**：
+
+    -   特定の遺伝子ファミリーや、同じ調節ネットワークに属する遺伝子がセットとして定義される。
+
+    -   例：NF-kBシグナルに関与する遺伝子群など。
+
+5.  **疾患との関連性：**
+
+    -   特定の疾患フェノタイプとの関連性が示唆されている遺伝子がセットとして定義される
+
+### 遺伝子セットの作成に使われるデータベース
+
+-   遺伝子セットは、さまざまな生物学的データベースから取得できる。
+
+-   代表的なデータベースには以下がある：
+
+    1.  **Gene Ontology (GO)**:
+
+        -   遺伝子を生物学的プロセス、細胞構造、分子機能に基づいて分類した大規模なデータベース。
+
+        -   遺伝子セットは「生物学的プロセス（BP）」「分子機能（MF）」「細胞構造（CC）」のカテゴリに分けられる。
+
+    2.  **KEGG (Kyoto Encyclopedia of Genes and Genomes)**:
+
+        -   シグナル伝達経路や代謝経路に関連する遺伝子のセットを提供するデータベース。
+
+        -   特定の経路に関与する遺伝子群をセットとして解析に使用する。
+
+    3.  **MSigDB (Molecular Signatures Database)**:
+
+        -   遺伝子発現データをもとに、さまざまな条件での遺伝子セットを提供するデータベース。
+
+        -   「Hallmark遺伝子セット」や「機能的セット」「経路セット」などのカテゴリに分けられている。
+
+    4.  **Reactome**:
+
+        -   生物学的な代謝経路やシグナル伝達経路に基づいて遺伝子セットが定義されており、細胞の反応経路に関するデータが含まれている。
+
+    5.  enrichr:
+
+        -   上記のさまざまなデータベースを選べるように統合＋独自のセットを合わせたデータベース
+
+        -   ウェブツールとと共に、Rパッケージも提供している
+
+### 遺伝子セット解析手法の分類
+
+まず、どのような解析手法があるのかを方法のカテゴリから眺めてみよう。
+
+1.  **過剰表現解析（ORA）**:
+
+    -   事前にフィルタリングされた発現変動遺伝子（DEGs）リストを対象に、特定の遺伝子セットが過剰に含まれているかどうかを評価する手法。
+
+    -   超幾何検定を使用し、背景に対してDEGsリストの中にセットが偶然以上に含まれているかを評価。
+
+2.  **セット全体解析**:
+
+    -   GSEAのように、全ての遺伝子を用いて、遺伝子セット全体の発現変動傾向を評価する手法。
+
+    -   各遺伝子のスコアに基づいて、遺伝子セット全体がリストの上位または下位に偏っているかどうかを累積スコアで評価。
+
+3.  **パラメトリック検定**:
+
+    -   CameraやRoastのように、遺伝子発現データに対して線形モデルやt検定を適用し、遺伝子セットの発現変動を評価。
+
+    -   遺伝子間の相関やサンプル間の依存性を考慮した詳細な解析が可能。
+
+4.  **パスウェイ解析**:
+
+    -   KEGGやReactomeのデータベースを使用して、遺伝子が特定のシグナル経路や代謝経路に関連しているかどうかを調べる解析。
+
+5.  **モジュールベース解析**:
+
+    -   WGCNAのように、遺伝子の共発現ネットワークを解析し、共に発現が変動する遺伝子群（モジュール）を探索して、それに基づいた遺伝子セットを評価。また、Humanbaseのように組織特異的な共発現 / 相互作用ネットワークのデータベースに対して変動遺伝子をマッピングして、モジュールを探索して遺伝子セットを評価する方法など。
+
+### 遺伝子セット解析手法の分類（主なものを中心に）
+
+| **カテゴリ**             | **手法名**                                            | **クラス**         | **解析方法**                  | **データタイプ**             | **多重検定補正**     | **特長**                                       |
+|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+| **過剰表現解析 (ORA)**   | ORA（Overrepresentation Analysis）                    | ノンパラメトリック | 超幾何検定                    | DEGs（発現変動遺伝子リスト） | FDR, Bonferroni      | DEGsに基づく遺伝子セットの過剰表現を評価       |
+|                          | enrichR                                               | ノンパラメトリック | 超幾何検定                    | DEGs                         | FDR, Bonferroni      | 複数データベースを利用した簡単なORA解析        |
+|                          | DAVID                                                 | ノンパラメトリック | 超幾何検定                    | DEGs                         | FDR, Bonferroni      | 経路、機能注釈の提供                           |
+| **セット全体解析**       | GSEA（Gene Set Enrichment Analysis）                  | ノンパラメトリック | ランキングベースの累積スコア  | 全ての遺伝子                 | FDR                  | 全遺伝子リストの発現変動傾向を評価             |
+|                          | PGSEA（Parametric GSEA）                              | パラメトリック     | パラメトリックモデル          | 全ての遺伝子                 | FDR                  | GSEAのパラメトリック版                         |
+|                          | ssGSEA（single sample GSEA）                          | ノンパラメトリック | ランキングベースの累積スコア  | 個々のサンプルに対して実行   | FDR                  | 各サンプルごとに遺伝子セットの傾向を解析       |
+| **パラメトリック検定**   | Camera                                                | パラメトリック     | t検定（サンプル間の相関調整） | 全ての遺伝子                 | FDR                  | 遺伝子間の相関を調整したパラメトリックな検定   |
+|                          | Roast                                                 | パラメトリック     | ローテーションテスト          | 全ての遺伝子                 | FDR                  | ローテーションテストを使った検定               |
+|                          | Romer                                                 | パラメトリック     | ローテーションテスト          | 全ての遺伝子                 | FDR                  | Romerは遺伝子セットの平均スコアに基づく検定    |
+| **パスウェイ解析**       | KEGG Pathway Analysis                                 | ノンパラメトリック | 超幾何検定                    | DEGs                         | FDR, Bonferroni      | KEGG経路に関連する遺伝子セットを用いた解析     |
+|                          | Reactome Pathway Analysis                             | ノンパラメトリック | 超幾何検定                    | DEGs                         | FDR, Bonferroni      | Reactomeデータベースに基づいた経路解析         |
+| **モジュールベース解析** | WGCNA（Weighted Gene Co-expression Network Analysis） | ネットワーク解析   | 遺伝子共発現ネットワーク解析  | 全ての遺伝子                 | モジュール単位で評価 | 共発現遺伝子モジュールを探索し、機能注釈を行う |
+
+## Overrepresentation Analysis (ORA)
+
+-   **Overrepresentation Analysis（ORA）** は、特定の遺伝子セット（経路や機能に関連する遺伝子群）が、解析対象となる**発現変動遺伝子（DEGs）**の中で、**期待されるよりも多く含まれているかどうか**を評価する方法
+
+-   ORAは、通常、**遺伝子セットがランダムに選ばれた場合の期待値と比較**して、そのセットが発現変動遺伝子のリストで「過剰に」または「不足して」存在するかどうかを判定する
+
+-   ORAの目標は、**特定の生物学的過程や経路が実験条件において活性化されているかどうか**を検出することである
+
+### ORA の手順
+
+1.  **発現変動遺伝子（DEGs）のリスト（遺伝子シグネチャー）を作成**：
+
+    -   発現変動解析（例：limmaなど）に基づいて、p値やlog Fold Changeのしきい値を設定し、統計的に有意な遺伝子のリスト（DEGs）を取得。
+
+2.  **遺伝子セットの選定**：
+
+    -   Gene Ontology（GO）やKEGG経路、MSigDBなど、あらかじめ定義された遺伝子セットを使用。これらの遺伝子セットは、特定の機能や経路に関連する遺伝子群を表す
+
+3.  **遺伝子の分類**：
+
+    -   全ての遺伝子を次のように分類：
+
+        -   発現変動遺伝子（DEGs）
+
+        -   発現変動していない遺伝子
+
+    -   同時に、各遺伝子が所属する遺伝子セットの情報も利用。
+
+4.  **統計的検定**：
+
+    -   **超幾何検定**または**Fisherの正確検定**などを用いて、遺伝子セット内の遺伝子がDEGsリスト内に含まれている割合が、ランダムに選ばれた場合と比べて**過剰に含まれているかどうか**を評価。
+
+    -   ORAでは、発現変動している遺伝子の中で、その遺伝子セットの遺伝子が予想よりも多いか（過剰表現）、少ないか（欠乏）を判定する。
+
+### ORAの数理モデル
+
+-   ORAの基本的な数理モデルは**超幾何分布**を用いて表される。
+
+-   超幾何分布とはどのような確率分布なのかを理解していこう。
+
+    -   まず、超幾何分布は**重複なしの抽出（非復元抽出）**の確率を表す分布である。
+
+        -   つまり、サンプルを一度引いたら戻さない、すなわち一度引いたものが次のサンプリングに影響を与える場合の確率を表現する。
+
+        -   超幾何分布は、抽象的には以下の状況に対するモデルとして定義される：
+
+            -   **N** 個の要素からなる母集団（全体）がある
+
+            -   母集団の中には、特定の性質を持つものが **K** 個ある（成功要素）。
+
+            -   その母集団から **n** 個の要素を無作為にサンプリングする。
+
+            -   サンプリングされた中に、特定の性質を持つ要素（成功要素）が **x** 個含まれる確率を計算する。
+
+    -   例としてカードゲームを考え、その延長でORAの状況を定式化していくとわかりやすい
+
+        -   カードゲーム：
+
+            -   52枚のカードから、絵札（K=12枚）を含む3枚（n=3）を無作為に引く場合に、絵札がちょうど1枚（x=1）含まれる確率を求める
+
+                -   **N = 52**（カード全体の枚数）
+
+                -   **K = 12**（絵札の枚数）
+
+                -   **n = 3**（引くカードの枚数）
+
+                -   **x = 1**（引いたカードに含まれる絵札の枚数）
+
+        -   ORA：
+
+            -   ヒトゲノムに含まれる遺伝子から、ある特定の遺伝子セット（500個の遺伝子）を含む100個の遺伝子（変動遺伝子）を無作為に選択した際に、そのセットに属する遺伝子がちょうど10個含まれていた場合の確率を求める。
+
+                -   **N = 20,000**：全体の遺伝子数（ヒトゲノムに含まれる遺伝子数の例）。
+
+                -   **K = 500**：特定の遺伝子セット（例えば、ある経路に属する遺伝子セット）の遺伝子数。
+
+                -   **n = 100**：発現変動遺伝子の数。
+
+                -   **x = 10**：変動遺伝子の中で、特定の遺伝子セットに属する遺伝子の数。
+
+-   このように、すでに統計・確率理論で確立された数多くの確率分布を応用して、目の前の問題をモデル化（翻訳）することで、オミックス解析における多くの仮説検定手法は開発されていることは知っておくと理解しやすい
+
+-   ここで改めてORAを一般的に表現すると、「N個のヒトゲノムに含まれる遺伝子から、ある特定の遺伝子セット（K個の遺伝子）を含むM個の遺伝子（変動遺伝子）を無作為に選択した際に、そのセットに属する遺伝子がちょうどx個含まれていた場合の確率を求める」。
+
+    -   **N**：全遺伝子集合（背景集合）に含まれる遺伝子の総数。
+
+    -   **K**：特定の遺伝子セットに含まれる遺伝子の数。
+
+    -   **M**：発現変動遺伝子（DEGs）の総数。
+
+    -   **x**：DEGsの中で、特定の遺伝子セットに属する遺伝子の数。
+
+-   これに対して、超幾何分布を用いた確率は、N, K, n, xを用いて表すと以下のように定義される：
+
+$$
+P(X \geq x) = 1 - \sum_{i=0}^{x-1} \frac{\binom{K}{i} \binom{N-K}{M-i}}{\binom{N}{M}}
+$$
+
+-   $P(X = x)$ は、サンプリングした中に特定の性質を持つ要素が $x$ 個含まれる確率。
+
+-   $\binom{K}{x}$ は、成功要素から $x$ 個を選ぶ組み合わせ（コンビネーション）。
+
+-   $\binom{N-K}{n-x}$ は、成功要素以外の要素から $n-x$ 個を選ぶ組み合わせ。
+
+-   $\binom{N}{n}$ は、母集団全体から $n$ 個を選ぶ組み合わせ。
+
+### 確率の解釈
+
+-   この確率は、「もし遺伝子セットに属する遺伝子が**ランダム**に選ばれた場合、どれくらいの頻度でセットに属する x 個の遺伝子が含まれるか」を示す。
+
+-   言い換えれば、発現変動遺伝子の中に特定の遺伝子セットが**偶然**含まれる確率を計算し、これが非常に低い場合、特定の遺伝子セットが過剰に表現されているのか否かを判断する。
+
+-   **確率が低い場合**、つまり**小さい p 値**の場合は、次のように解釈する：
+
+1.  **偶然に含まれる確率が低い**: この遺伝子セットが偶然に得られる可能性が非常に低いことを意味する。つまり、「ランダムに遺伝子を選んでも、この特定の遺伝子セットがこれほど多く含まれることはほとんどない」といえる。
+
+2.  **期待以上に含まれている**: 確率が低いということは、**偶然では説明できないレベルで、特定の遺伝子セットがサンプルに含まれている**ということである。これを「過剰に含まれている」と解釈できる。
+
+3.  **統計的有意性**: 確率が低い（小さな p 値）と、統計的に有意であることである。つまり遺伝子セットが偶然ではなく、生物学的に意味があるものとして解釈される。通常は、p 値があらかじめ設定した有意水準（例えば 0.05）よりも小さい場合、その遺伝子セットが過剰に含まれていると判断する。
+
+ORAの具体的なステップ
+
+#### ステップ1: DEGs リストを作成
+
+発現変動解析（例：limmaなど）で得られたp値やlog Fold Changeに基づいて、有意な遺伝子リスト（DEGs）を作成。
+
+#### ステップ2: 遺伝子セットを取得
+
+使用するデータベース（Gene Ontology、KEGG、MSigDBなど）から遺伝子セットを取得。これらのセットは、特定の生物学的過程や機能に関連する遺伝子群を含む。
+
+#### ステップ3: 超幾何検定
+
+超幾何検定を行い、遺伝子セット内の遺伝子がDEGsリスト内に過剰に含まれているかどうかを評価。具体的には、以下の数値を計算。
+
+-   **N**: 全体の遺伝子数（バックグラウンドとなる全遺伝子の集合）。
+
+-   **K**: 遺伝子セット内の遺伝子数。
+
+-   **M**: DEGsリスト内の遺伝子数。
+
+-   **x**: DEGsリスト内に存在する遺伝子セットの遺伝子数。
+
+#### ステップ4: 結果の解釈
+
+超幾何検定の結果から、遺伝子セットが過剰表現されているか（つまり、その遺伝子セットが生物学的に重要な役割を果たしている可能性があるか）を評価。p値が低いほど、その遺伝子セットが実験条件下で有意に変動していることを示している。
+
+### ORAの長所と短所
+
+#### 長所
+
+-   **計算が容易**：ORAは、簡単な超幾何検定に基づいており、計算が比較的容易で高速に実行できる。
+-   **解釈が直感的**：特定の遺伝子セットが発現変動遺伝子のリストにどれだけ含まれているかを直接評価するため、解釈がしやすい。
+
+#### 短所
+
+-   **遺伝子セットの定義に依存**：解析の結果は、使用する遺伝子セットの質や選択に依存。不十分な遺伝子セットは、有意な結果を見逃す可能性がある。
+-   **独立性の仮定**：ORAでは、遺伝子が独立していることを仮定しているが、遺伝子間には共通の調節ネットワークが存在する可能性があり、この仮定が現実に即していない場合がある。
+
+## Gene Set Enrichment Analysis (GSEA)
+
+-   **GSEA（Gene Set Enrichment Analysis）** は、**遺伝子セットの全体的な発現傾向**を調べる解析手法。
+
+-   GSEAの目的は、あらかじめ定義された遺伝子セット（例えば、ある生物学的経路や機能に関連する遺伝子群）が、実験条件においてランダムに分布しているか、それとも**特定の発現パターンを示しているか**を評価すること。
+
+-   GSEAは、**遺伝子の全体的なスコア（例：log Fold Changeやp値）**に基づいて、遺伝子セット全体の発現傾向を評価する。
+
+-   これにより、個々の遺伝子では統計的に有意でない場合でも、セット全体として有意な傾向があるかどうかを検出する。
+
+### GSEAの手順
+
+GSEAは次の手順で解析を行う：
+
+1.  **遺伝子の順位付け**:
+
+    -   実験条件における遺伝子発現の変動量（log Fold Changeやt値など）に基づいて、全遺伝子を**スコアでソート**し（通常は降順）、リストを作成。
+
+2.  **遺伝子セットのスコア**:
+
+    -   あらかじめ定義された遺伝子セット（Gene Ontology、KEGG経路など）を用いて、そのセットがソートされた遺伝子リスト内にどのように分布しているかを評価。
+
+3.  **累積スコアの計算（Enrichment Score: ES）**:
+
+    -   遺伝子セット内の遺伝子がリストの上位に集中しているか、下位に集中しているか、またはランダムに分布しているかを評価。
+
+    -   リスト内で遺伝子セットに含まれる遺伝子が出現するたびにスコアを上昇させ、それ以外の遺伝子ではスコアを減少させる。
+
+4.  **有意性の評価**:
+
+    -   ランダムに遺伝子をシャッフルして帰無分布を作成し、観測されたスコアと比較して**p値**を計算。
+
+### GSEAの数理モデル
+
+#### **遺伝子の順位付け**
+
+-   まず、全ての遺伝子を統計的なスコア（例：t統計量やlog Fold Change）に基づいてソートする。これにより、条件間で最も発現変動が大きい遺伝子がリストの上位に、変動が小さい遺伝子が下位に配置される。
+
+-   各遺伝子 $i$ に対するスコアを $r_i$ とすると、遺伝子リストは次のように表される：
+
+$$
+\{ r_1, r_2, \dots, r_N \}
+$$
+
+ここで、$N$ は全遺伝子数を表す。
+
+#### **累積スコア（Enrichment Score: ES）の計算**
+
+-   次に、あらかじめ定義された遺伝子セット $S$ に含まれる遺伝子がリストの上位に集中しているかどうかを評価するために、累積スコア $ES(S)$ を計算する。これを**累積和統計量**として表す。
+
+-   遺伝子リストを上から順に探索し、遺伝子がセット $S$ に含まれている場合にスコアを増加させ、含まれていない場合はスコアを減少させる。スコアの変化量は次の式で表される：
+
+-   遺伝子 $i$ がセット $S$ に含まれる場合： $$
+    \Delta_{ES} = \frac{1}{|S|} \cdot r_i
+    $$
+
+-   遺伝子 $i$ がセット $S$ に含まれない場合： $$
+    \Delta_{ES} = \frac{-1}{N - |S|}
+    $$
+
+ここで、 - $|S|$ は遺伝子セット $S$ に含まれる遺伝子の数。 - $N$ は全遺伝子数。 - $r_i$ は遺伝子 $i$ のスコア（順位に基づく重み付きスコア）。
+
+これに基づいて、遺伝子リスト全体に対して累積スコアを計算し、最大値 $ES(S)$ がそのセットの「エンリッチメントスコア」と呼ぶ。
+
+#### **帰無分布の生成とp値の計算**
+
+-   次に、ランダムに遺伝子の順序をシャッフルし、同様にエンリッチメントスコア $ES(S)$ を計算。これを複数回繰り返して、帰無分布を生成。
+
+-   観測されたエンリッチメントスコア $ES(S)$ がこの帰無分布と比べてどれだけ大きいかをp値として評価。具体的には、ランダム分布の中で観測されたスコアよりも大きいスコアが出現する頻度を計算。
+
+$$
+p = \frac{\text{ランダムに生成されたスコアが } ES(S) \text{ より大きい回数}}{\text{全てのシミュレーションの回数}}
+$$
+
+### GSEA の長所と短所
+
+#### 長所
+
+-   **統計的に有意でなくても重要な遺伝子セットを検出可能**：個々の遺伝子が統計的に有意でなくても、セット全体としての発現傾向を検出できる。
+
+-   **事前のフィルタリングが不要**：事前に有意な遺伝子を選別する必要がなく、全ての遺伝子を解析に使用できる。
+
+#### 短所
+
+-   **計算量が大きい**：ランダム化を繰り返すため、計算に時間がかかることがある。
+
+-   **結果の解釈が難しい場合がある**：セット全体としての有意性を評価するため、個別の遺伝子の解釈が難しい場合がある。
+
+### ORAとの違い
+
+-   **ORA**（Overrepresentation Analysis）では、事前にフィルタリングされた発現変動遺伝子（DEGs）リストを用いて、特定の遺伝子セットがDEGsに過剰に含まれているかどうかを評価。
+
+    -   **フィルタリングが必要**：DEGsの選択が事前に行われ、解析はその選ばれた遺伝子セットに基づいて行われる。
+
+    -   超幾何検定が主に使用される。
+
+-   **GSEA** では、事前のフィルタリングを行わず、全遺伝子を使用して遺伝子セット全体の発現傾向を評価。
+
+    -   **フィルタリング不要**：全ての遺伝子のスコアを使って解析を行う。
+
+    -   遺伝子セットの全体的な発現傾向（上位に偏っているか、下位に偏っているか）を評価。
+
+## camera, roastについて
+
+-   `limma` パッケージでは、次のような方法で遺伝子セット解析が実装されている。
+
+    -   **camera()**：統計的に有意な発現変動を持つ遺伝子セットを検出。
+
+    -   **roast()**：ベースラインに対して、遺伝子セット全体の変動が有意かどうかを検定。
+
+    -   **romer()**：一般化された線形モデルを使用して、遺伝子セットごとに発現変動を検定。
+
+-   これらは**t統計量**や**log Fold Change**を基にした統計量に基づいて、各遺伝子セットの**有意性を評価**する。
+
+-   特定の遺伝子リストを選択しない点では、GSEAと類似しているが、背後のモデルは同じではない。
+
+### **camera() を用いた遺伝子セット解析の数理モデル**
+
+#### **基本的なアイデア**
+
+-   `camera()` は、遺伝子セットが他のセットに比べて有意に変動しているかどうかを評価する手法。
+
+-   主な考え方は、セット内の遺伝子のt統計量が、セット外の遺伝子の統計量と比較して、**平均的に高いかどうか**を調べること。
+
+#### **遺伝子セット内の t統計量の分布**
+
+-   各遺伝子 $i$ に対して、発現変動解析で得られた**t統計量** $t_i$ を用いて、遺伝子セット $S$ 内の遺伝子の統計量の平均を計算。
+
+$$
+\bar{t}_S = \frac{1}{|S|} \sum_{i \in S} t_i
+$$
+
+ここで、 - $S$ は遺伝子セットを表し、 - $|S|$ はセットに含まれる遺伝子の数、 - $t_i$ は遺伝子 $i$ に対する t統計量。
+
+-   セット外の遺伝子に対する平均統計量も同様に計算できる。
+
+#### **分散と平均の調整**
+
+次に、t統計量の**分散**を用いて、遺伝子セット内の変動がランダムに得られるかどうかを検定する。これは、次の統計量で表される。
+
+$$
+T_S = \frac{\bar{t}_S - \mu_0}{\sigma_{\bar{t}_S}}
+$$
+
+ここで、 - $\mu_0$ は帰無仮説下での期待される平均（通常は0）、 - $\sigma_{\bar{t}_S}$ は遺伝子セット内の t統計量の標準誤差。
+
+この統計量は、**標準正規分布**に従うと仮定され、これに基づいてp値を計算する。
+
+#### **p値の計算**
+
+-   最終的に、遺伝子セット $S$ のt統計量の平均値が、他のセットと比べて有意に大きいかどうかを検定し、**p値**を計算。\
+-   これにより、**その遺伝子セットが有意に発現変動しているかどうか**を判断する。
+
+### **roast() の数理モデル**
+
+-   `roast()` では、**事前に定義された遺伝子セット**が、特定の条件下で有意に変動しているかどうかを検定。\
+-   **セット内のすべての遺伝子に対する統計量**を合計して評価。
+
+#### **t統計量の合計**
+
+-   ある遺伝子セット $S$ に対して、各遺伝子の t統計量の合計を計算。
+
+$$
+T_S = \sum_{i \in S} t_i
+$$
+
+-   この値が、ランダムな遺伝子セットに比べて有意に大きいかどうかを検定。
+
+#### **反復的な検定**
+
+-   `roast()` では、**ブートストラップ法**を使って、帰無分布（ランダムな遺伝子セットのt統計量の分布）を作成し、それに対して観測された t統計量の合計 $T_S$ を比較する。
+
+#### **結果の評価**
+
+-   p値は、この帰無分布に基づいて計算され、特定の遺伝子セットが有意に発現変動しているかどうかが判断される。
+
+### 手法の使い分け
+
+-   **ORA**は、シンプルで発現変動遺伝子（DEGs）に対する過剰表現解析が必要なときに適している。
+
+-   **GSEA**は、全体の遺伝子発現の傾向を評価したい場合に有効。
+
+-   **Camera**は、サンプル間の相関を考慮する必要がある場合に使用され、GSEAよりも正確な結果を提供。
+
+-   **Roast**は、複雑な実験デザインや高度な統計手法を必要とする場合に適しており、遺伝子セット全体の変動を精密に評価。
+
+以上の特徴を表でまとめると以下のようになる：
+
+| **手法**   | **解析対象**                             | **アプローチ**                   | **考慮する要因**             | **使用例**                                                   |
+|--------------|--------------|--------------|--------------|----------------|
+| **ORA**    | フィルタリングされた遺伝子リスト（DEGs） | 超幾何検定やFisher検定           | 特定の遺伝子セットの過剰表現 | シンプルで高速な解析が必要な場合                             |
+| **GSEA**   | 全遺伝子リスト                           | ランキングに基づく累積スコア計算 | 発現変動の全体的な傾向       | 発現変動が小さい遺伝子も含めて傾向を評価したい場合           |
+| **Camera** | 全遺伝子リスト                           | t検定（サンプル間の相関調整）    | 遺伝子間の相関               | GSEAの代替として、サンプル間の相関を考慮した解析をしたい場合 |
+| **Roast**  | 全遺伝子リストまたは特定セット           | ローテーションテスト             | 実験デザインの複雑さ         | 複数因子が絡む実験デザインを含む高度な解析を行いたい場合     |
+
+------------------------------------------------------------------------
+
+# 演習16　遺伝子セット解析
+
+## ORAによる解析
+
+**`enrichR`** は、ユーザーが指定した遺伝子リストに基づいて、複数のデータベースで**機能的な過剰表現解析**（Overrepresentation Analysis, ORA）を行うためのRパッケージです。このパッケージは、遺伝子の過剰表現を**Gene Ontology (GO)**、**KEGGパスウェイ**、**Reactomeパスウェイ**などのさまざまなデータベースに対して解析できます。
+
+-   以下にコードの全体を示す：
+
+``` r
+# enrichRの読み込み
+library(enrichR)
+
+# 使用するデータベース
+dbs <- c("GO_Biological_Process_2021", "KEGG_2021_Human")
+
+# 遺伝子リストの作成
+gene_list <- c("TP53", "BRCA1", "BRCA2", "EGFR", "MTOR")
+
+# enrichRの実行
+enrichment_results <- enrichr(gene_list, dbs)
+
+# 結果の表示
+head(enrichment_results$GO_Biological_Process_2021)
+
+# 結果の視覚化
+plotEnrich(enrichment_results$GO_Biological_Process_2021)
+
+# 結果の保存
+write.csv(enrichment_results$GO_Biological_Process_2021, "GO_BP_Results.csv")
+```
+
+### `enrichR`の基本的な使い方
+
+#### パッケージのインストールと読み込み
+
+`enrichR`パッケージはCRANにある
+
+``` r
+# インストール（まだインストールされていない場合）
+install.packages("enrichR")
+
+# パッケージを読み込み
+library(enrichR)
+```
+
+#### 利用可能なデータベースの確認
+
+まず、利用できるデータベースの一覧を確認できます。`listEnrichrDbs()` 関数を使って、利用可能なデータベースを一覧表示。
+
+``` r
+# 利用可能なデータベースの一覧を取得
+dbs <- listEnrichrDbs()
+head(dbs)
+```
+
+#### 遺伝子リストの作成
+
+`enrichR` では、ユーザーが持っている遺伝子リストに基づいて解析を行います。例えば、以下のように遺伝子シンボルのリストを用意。
+
+``` r
+# 遺伝子リストの例（遺伝子シンボル）
+gene_list <- c("TP53", "BRCA1", "BRCA2", "EGFR", "MTOR")
+```
+
+#### 適用するデータベースを選択
+
+解析に使用するデータベースを選択。以下は例として、**GO Biological Process** と **KEGG** を使用。
+
+``` r
+# 使用するデータベースを指定（GOとKEGG）
+dbs <- c("GO_Biological_Process_2021", "KEGG_2021_Human")
+```
+
+#### enrichRによる解析の実行
+
+`enrichR` 関数を使って、指定した遺伝子リストとデータベースを用いた過剰表現解析を実行。
+
+``` r
+# enrichRを使用して解析を実行
+enrichment_results <- enrichr(gene_list, dbs)
+```
+
+#### 結果の表示
+
+`enrichR` 関数の結果はリストとして返され、各データベースごとに結果が含まれる。各結果はデータフレーム形式で、p値や調整済みp値、Zスコアなどの解析結果が含まれる。
+
+``` r
+# GO Biological Processの結果を表示
+head(enrichment_results$GO_Biological_Process_2021)
+
+# KEGGパスウェイの結果を表示
+head(enrichment_results$KEGG_2021_Human)
+```
+
+#### 結果の視覚化
+
+**`plotEnrich`** 関数を使うと、過剰表現解析の結果を簡単に視覚化できる。以下の例では、**GO Biological Process**の結果をプロット。
+
+``` r
+# GO Biological Processの結果をプロット
+plotEnrich(enrichment_results$GO_Biological_Process_2021)
+
+# KEGGの結果も同様にプロット可能
+plotEnrich(enrichment_results$KEGG_2021_Human)
+```
+
+#### 結果の保存
+
+解析結果をCSVファイルとして保存することも可能。`write.csv()`を使って、結果を保存できる。
+
+``` r
+# GO Biological Processの結果をCSVファイルに保存
+write.csv(enrichment_results$GO_Biological_Process_2021, "GO_BP_Results.csv")
+
+# KEGGの結果をCSVファイルに保存
+write.csv(enrichment_results$KEGG_2021_Human, "KEGG_Results.csv")
+```
+
+#### enrichRの出力項目の説明
+
+各データベースの結果には、以下のような項目が含まれています。
+
+-   **Term**: 遺伝子セットやパスウェイの名前。
+
+-   **Overlap**: 入力された遺伝子リストのうち、特定の遺伝子セットやパスウェイに含まれている遺伝子の数。
+
+-   **P.value**: 過剰表現の有意性を示すp値。
+
+-   **Adjusted.P.value**: 多重検定補正後のp値（通常、FDR補正）。
+
+-   **Z.score**: 遺伝子セットのエンリッチメントの方向性と強さを示すZスコア。
+
+-   **Combined.Score**: p値とZスコアに基づく統合スコア。高いスコアほど有意なエンリッチメントを示す。
+
+#### enrichRの用途
+
+-   **GO解析**: Gene Ontology (GO) の生物学的プロセス、分子機能、細胞構成のカテゴリで遺伝子セットの過剰表現を解析。
+
+-   **パスウェイ解析**: KEGGやReactomeなどのパスウェイデータベースを使って、遺伝子セットの過剰表現を調べる。
+
+-   **カスタム解析**: enrichRは、数多くの公開データベースにアクセスできるため、特定の疾患、薬剤、あるいは組織に関するアノテーションも解析可能。
+
+### limmaの結果を用いる場合
+
+-   limmaによる変動解析の結果を用いる場合
+
+    -   group2-group1のコントラストの結果を例に分析する
+
+    -   5%有意に変動した遺伝子のうち、増加したもの、減少した遺伝子群それぞれに対して遺伝子セット解析を行う
+
+    -   dtの行名（遺伝子識別子）はentrez idであるが、enrichrは遺伝子シンボルが必要
+
+    -   そのため、annotation_infoを用いて遺伝子シンボルを取り出す
+
+```{r}
+# limmaによる変動解析の結果
+dt <- decideTests(fit, method="separate", adjust.method="BH", p.value=0.05, lfc=0)
+
+# group2-group1のコントラストで増加（１）、現象(-1)しているもの抽出
+up_geneid <- rownames(dt)[dt[,"group2-group1"]==1]
+down_geneid <- rownames(dt)[dt[,"group2-group1"]==-1]
+
+# 遺伝子シンボルへの変換
+up_gene <- dge$genes$symbol[match(up_geneid,dge$genes$entrez_id)]
+down_gene <- dge$genes$symbol[match(down_geneid,dge$genes$entrez_id)]
+
+# enrichrの適用
+library(enrichR)
+dbs <- c("GO_Biological_Process_2021", "KEGG_2021_Human")
+enrichment_up_results <- enrichr(up_gene, dbs)
+enrichment_down_results <- enrichr(down_gene, dbs)
+plotEnrich(enrichment_up_results$GO_Biological_Process_2021)
+plotEnrich(enrichment_down_results$GO_Biological_Process_2021)
+```
+
+-   FDR \< 20%のGOタームを抽出する
+
+```{r}
+GOBP_up <- enrichment_down_results$GO_Biological_Process_2021
+GOBP_down <- enrichment_down_results$GO_Biological_Process_2021
+GOBP_up[GOBP_up$Adjusted.P.value <= .2,]
+GOBP_down[GOBP_down$Adjusted.P.value <= .2,]
+```
+
+## GSEA解析
+
+-   オリジナルはGSEAというスタンドアロンソフトウェアがある
+
+-   Rでは、clusterProfilerパッケージとfgseaパッケージが広く使われている
+
+-   clusterProfilerは遺伝子セットがビルトインされているが、fgseaは自前で用意する必要がある
+
+### fgsea()を用いた場合
+
+-   全体のコードを示す
+
+``` r
+library(fgsea)
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+
+# limmaの結果取得
+result <- topTable(fit, coef = "group2-group1",adjust.method = "BH", sort.by="P", number=Inf)
+# t統計量を代入
+gene_list <- result$t
+# 名前を設定
+names(gene_list) <- result$symbol
+# 降順に並べ替え
+gene_list <- sort(gene_list,decreasing = TRUE)
+# 重複チェック
+any(duplicated(names(gene_list)))
+# fgsea_simpleを使った解析
+fgsea_result <- fgseaSimple(pathways = gmt, stats = gene_list, nperm = 1000)
+
+# NES > 0 の結果をフィルタリング（上昇方向にエンリッチされたセット）
+fgsea_pos <- fgsea_result %>% filter(NES > 0 & pval < 0.05) # FDRを用いる場合はpvalの代わりに、padj
+
+# NES < 0 の結果をフィルタリング（減少方向にエンリッチされたセット）
+fgsea_neg <- fgsea_result %>% filter(NES < 0 & pval < 0.05) # FDRを用いる場合はpvalの代わりに、padj
+
+# 結果の視覚化 
+plotEnrichment(gmt[["EGFR Downregulation R-HSA-182971"]], gene_list)
+```
+
+-   まず遺伝子セットを表現したファイルをダウンロードする必要がある
+-   Enrichrのウェブサイトにまとめられており、必要なファイルを[ダウンロード](https://maayanlab.cloud/Enrichr/#libraries)できる
+-   遺伝子セットファイルは[*GMTファイル（Gene Matrix Transposed）*](https://software.broadinstitute.org/cancer/software/gsea/wiki/index.php/Data_formats) と呼ばれており、やや特殊な形式のテキストファイルとなっている。
+
+#### GMTファイルの特徴
+
+-   **テキスト形式**: GMTファイルは、**タブ区切り**のテキストファイル。
+
+-   **遺伝子セットの定義**: 各行が1つの遺伝子セットを表しており、遺伝子セット名、説明、含まれる遺伝子のリストが含まれている。
+
+-   **遺伝子セットの内容**: 1つの遺伝子セットには、複数の遺伝子がリストアップされている。遺伝子は、遺伝子名、Entrez ID、Ensembl IDなど、さまざまな形式で記載される場合があるため、変動解析の識別子と遺伝子セット解析が要求する識別子の両方に合致するものを選択する。
+
+#### GMTファイルのフォーマット
+
+1行に1つの遺伝子セットが記述され、以下のような構成になっている：
+
+```         
+遺伝子セット名 <tab> 説明 <tab> 遺伝子1 <tab> 遺伝子2 <tab> 遺伝子3 <tab> ... <tab> 遺伝子N
+```
+
+##### フォーマットの詳細:
+
+1.  **遺伝子セット名**: 遺伝子セットの名前。例えば、パスウェイや機能アノテーションの名前（例：`KEGG_CELL_CYCLE`）。
+
+2.  **説明**: その遺伝子セットに関する追加情報やURL（任意）。空白にすることも可能。
+
+3.  **遺伝子リスト**: タブ区切りで、遺伝子がリストされる。
+
+上の説明からわかるように、各行が１つの遺伝子セットを表し、3列目以降に任意の数の遺伝子が並ぶ。そのため、列数は行ごとに異なる。このような不定形なデータ形式については、Rではリスト形式が便利である。fgseaパッケージのgmtファイルを読み込み、リスト形式に変換して扱う。そのほか、遺伝子ごとに行を設定してデータフレームで扱うパッケージもある。
+
+-   例:
+    -   イメージ掴むために仮想的な遺伝子セットを作成してみる
+    -   `KEGG_CELL_CYCLE`という遺伝子セットに関連する遺伝子を記述した例である
+
+```         
+KEGG_CELL_CYCLE <tab> Pathway involved in cell cycle <tab> TP53 <tab> CDK2 <tab> CCND1 <tab> RB1 <tab> E2F1
+```
+
+-   以下は二つの仮想的な遺伝子セットを作成して、現在のディレクトリにgene_sets.gmtというファイルを作成するコード例である。
+
+    -   実際に用いることはあまりないが、独自の遺伝子セットを定義する場合などには必要である。
+
+```{r}
+# 遺伝子セットを定義
+gene_sets <- list(
+  "KEGG_CELL_CYCLE" = c("TP53", "CDK2", "CCND1", "RB1", "E2F1"),
+  "KEGG_MAPK_PATHWAY" = c("MAPK1", "MAPK3", "MAPK8", "MAPK9")
+)
+
+# GMTファイルの作成
+gmt_file <- file("gene_sets.gmt", "w")
+for (set_name in names(gene_sets)) {
+  cat(set_name, "Description", paste(gene_sets[[set_name]], collapse = "\t"), sep = "\t", file = gmt_file)
+  cat("\n", file = gmt_file)
+}
+close(gmt_file)
+```
+
+-   シェル端末で以下のコマンドで内容を確認できる。
+
+```{bash}
+cat gene_sets.gmt
+```
+
+#### fgseaを用いた遺伝子セットの読み込み
+
+-   fgseaパッケージにはgmtPathways()という関数がある。
+
+-   引数にgmtファイルを指定すればリスト形式読み込みをしてくれるユーテリティ関数である
+
+-   直接EnrichrのURLを指定しても良い
+
+    -   今回はReactomeの遺伝子セットデータのURLを指定して取得してみる。
+
+    -   URLを取得するには、ウェブサイトから右クリック（macならダブルタップ）でリンク先URLをコピーを選択すれば、ペーストして貼り付ければ良い
+
+```{r}
+# BiocManager::install("fgsea")
+library(fgsea)
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+head(gmt)
+```
+
+#### fgseaを用いた解析
+
+-   **`fgsea_simple`** 関数は、`fgsea` パッケージ内で利用可能な、**Gene Set Enrichment Analysis (GSEA)** の簡便な実装
+
+-   この関数は、特に**シンプルなインターフェース**でGSEA解析を行うことを目的にしているため、少ない引数で迅速に解析を実行できる
+
+-   `fgseaSimple`の基本的な使い方
+
+``` r
+fgseaSimple(pathways, stats, nperm = 1000, minSize = 15, maxSize = 500, scoreType = "std", ...)
+```
+
+#####引数の説明:
+
+-   **`pathways`**: 遺伝子セットを含むリスト。各遺伝子セットはベクトルで、遺伝子名やIDが含まれている必要がある。
+
+-   **`stats`**: 遺伝子のスコアのベクトル。GSEAでは、通常、`logFC`（log fold change）や統計量に基づく遺伝子リストのスコアが使用される。遺伝子名やIDを名前として持つ必要がある（`names(stats)`に遺伝子名が含まれていること）。
+
+-   **`nperm`**: パーミュテーションの回数。デフォルトは1000。精度を高めるためには、パーミュテーション回数を増やすことができる。
+
+-   **`minSize`**: 遺伝子セットの最小サイズ。この値より小さい遺伝子セットは解析に含まれない（デフォルトは15）。
+
+-   **`maxSize`**: 遺伝子セットの最大サイズ。この値より大きい遺伝子セットは解析に含まれない（デフォルトは500）。
+
+-   **`scoreType`**: スコアタイプ。デフォルトは `"std"`（通常のスコア）。`"pos"` や `"neg"` を指定することで、正方向あるいは負方向のスコアに基づく解析も可能。
+
+##### 戻り値:
+
+-   GSEA解析結果のデータフレームを返す。返される結果には、以下の情報が含まれる:
+
+    -   **pathway**: 遺伝子セットの名前
+
+    -   **pval**: p値
+
+    -   **padj**: 多重検定補正後のp値（FDR）
+
+    -   **ES**: エンリッチメントスコア
+
+    -   **NES**: 正規化エンリッチメントスコア
+
+    -   **size**: 遺伝子セットのサイズ
+
+-   以下では、limmaの変動解析結果から得られたt統計量を用いてみよう。
+
+-   すでに説明したようにGSEAでは全ての遺伝子リストを用いる（有意水準で区切る必要がない）
+
+-   変動解析の細かな統計量まで出力してくれるtopTable()の出力からt統計量を取り出して用いる。
+
+```{r}
+result <- topTable(fit, coef = "group2-group1",adjust.method = "BH", sort.by="P", number=Inf)
+
+head(result)
+
+```
+
+##### 遺伝子のスコアベクトルの準備
+
+-   t統計量は`t`という列に格納されていることがわかる
+
+-   また、各遺伝子名は`symbol`という列に格納されある
+
+-   以下では、gene_listという変数にt統計量を代入してベクトルを作成して、さらに遺伝子シンボルを要素の名前に設定する
+
+    -   この時点で、gmtファイルが遺伝子シンボルであること、limmaの解析結果にも同じ遺伝子シンボルによる識別子があることは確認する
+
+-   gene_listは**降順**に並べ替える
+
+```{r}
+# t統計量を代入
+gene_list <- result$t
+# 名前を設定
+names(gene_list) <- result$symbol
+# 降順に並べ替え
+gene_list <- sort(gene_list,decreasing = TRUE)
+```
+
+##### 重複のチェック
+
+-   ここでもうひとつ大事な注意点がある。
+
+-   **遺伝子シンボルはユニーク**になっていることである
+
+-   GSEAのアルゴリズムを考えるとわかるように、gene_listの高い方から遺伝子シンボルを見ていき、gmtファイルのある遺伝子セットの遺伝子にマッチするかを確認していく。この際に、重複あれば繰り返しカウントされてしまい、ESスコアにその重複が反映され、過大推定をする。その結果、GSEAの結果は、重複分の効果を推定した結果となり、真に遺伝子セットとの関連性を推定した結果とはならない
+
+-   重複はduplicated()を用いて確認できる（seオブジェクトやdgeオブジェクトを作成する際に使用した）
+
+-   以下のコードは、`gene_list`の名前（遺伝子シンボル）に対して、重複有無をチェックするコード例である。
+
+```{r}
+any(duplicated(names(gene_list)))
+```
+
+-   遺伝子レベルで解析する場合、正しいプロセスを踏んでいれば重複は出現しない。
+
+    -   seまたはdgeオブジェクトを作成して変動解析の準備をする時点で重複は除外できている（それが正しい処理）
+
+-   一方、転写物レベルで解析して、その後の遺伝子セット解析のために遺伝子シンボルにマッピングする場合は、必ず重複する。
+
+-   また、何か解析済みのデータ（サプリデータなど）のみ利用可能な場合にも、元々の解析を転写物レベルで行い、結果には遺伝子レベルのIDのみが記載されているという不親切なケースもある（なかなかの不親切である）
+
+-   いずれにせよ、重複が生じた場合（TRUEになってしまった場合）は、どうするか。重複を解決する必要がある（無論、GSEAがそもそも妥当か？という疑問はある）。
+
+    -   機械的な方法：重複している遺伝子のうち最初の要素のみを選択する
+
+    -   慎重な方法：最大値で一つを選択するか、平均値などを用いて要約する。
+
+-   どちらも、遺伝子の降順における順序（ランク）に対してバイアスがかかりうることは容易に想像がつく。そのような場合は、そのフィルタリングの仕方によって結果がどの程度変わるのかなど、再現性のチェックをしたほうが健全である。
+
+##### fgsea()の実行
+
+-   今回は重複がなかったのでそのまま進めよう
+
+-   以下のコードで実行できる
+
+-   入力値は、gmt、gene_listである
+
+```{r}
+library(fgsea)
+
+# fgsea_simpleを使った解析
+fgsea_result <- fgseaSimple(pathways = gmt, stats = gene_list, nperm = 1000)
+
+# 結果の表示
+head(fgsea_result)
+```
+
+-   `fgsea` の結果は、一般的に以下の項目を含むデータフレームで提供される
+
+-   各項目が何を意味するのかを理解することで、遺伝子セット解析の結果を解釈できる
+
+    -   **pathway**: 遺伝子セットの名前（パスウェイ名やGOタームなど）。解析したそれぞれの遺伝子セットの名前が表示される。
+
+    -   **pval**: 遺伝子セットのエンリッチメントに対する**p値**。遺伝子セットがランダムに発現変動する仮説（帰無仮説）に対して、遺伝子セットが有意にエンリッチされているかを示す。
+
+    -   **padj**: p値に対して**多重検定補正**を行った結果。False Discovery Rate (FDR) による補正が一般的に行われ、多重検定の影響を考慮している。これが低ければ、結果が偶然である可能性が低いと考えられる。
+
+    -   **ES (Enrichment Score)**: **エンリッチメントスコア**。遺伝子セットの遺伝子が、遺伝子リストの上位または下位にどれだけ偏って存在するかを示すスコア。正の値は上位にエンリッチされていることを示し、負の値は下位にエンリッチされていることを示す。
+
+    -   **NES (Normalized Enrichment Score)**:
+
+    **正規化エンリッチメントスコア**。遺伝子セットサイズに影響されないようにエンリッチメントスコアを正規化した値。これにより、異なる遺伝子セット間の比較が可能になります。NESの値が大きければ大きいほど、エンリッチメントが顕著であることを示す。
+
+    -   **size**: 遺伝子セットのサイズ。遺伝子セットに含まれる遺伝子の数を示す。
+
+##### 結果の解釈のポイント
+
+1.  **pval**と**padj**:
+
+    -   **p値**は、解析した遺伝子セットがランダムな発現変動を示しているという仮説を棄却する確率。一般的に、**p値が小さい**ほど（通常 0.05 以下）、その遺伝子セットは有意にエンリッチされているとみなされる。
+
+    -   **padj**（FDR補正済みp値）は、多重検定による偽陽性を減らすために使用される。複数の遺伝子セットを同時に解析している場合、個々のp値に対して補正を行う必要がある。**padjが小さい**ほど、その遺伝子セットが実際に有意であると考えられる。
+
+2.  **ES (エンリッチメントスコア)**:
+
+    -   遺伝子セットのエンリッチメントの方向性を示す。ESが**正の値**であれば、遺伝子セットがランキングの**上位**に偏っている（発現が増加している）ことを示し、**負の値**であれば、ランキングの**下位**に偏っている（発現が減少している）ことを示す。
+
+    -   ESの**絶対値が大きい**ほど、遺伝子セットの遺伝子が強くエンリッチされていることを意味する。
+
+3.  **NES (正規化エンリッチメントスコア)**:
+
+    -   NESは、エンリッチメントスコアを正規化したもので、遺伝子セットのサイズに依存しない比較が可能。特に、異なるサイズの遺伝子セットを比較するときに使用する。
+
+    -   **NES \> 0**: 遺伝子セットが上位にエンリッチされている（発現が上昇している）。
+
+    -   **NES \< 0**: 遺伝子セットが下位にエンリッチされている（発現が抑制されている）。
+
+4.  **size**:
+
+    -   遺伝子セットに含まれる遺伝子の数。遺伝子セットが非常に大きい場合や非常に小さい場合、エンリッチメントの結果に影響を与える可能性があるため、通常は**適切なサイズ範囲**（例えば15～500）の遺伝子セットを使用する。
+
+##### 例: 結果の解釈
+
+| pathway         | pval  | padj  | ES    | NES  | size |
+|-----------------|-------|-------|-------|------|------|
+| KEGG_CELL_CYCLE | 0.001 | 0.005 | 0.42  | 2.1  | 150  |
+| KEGG_APOPTOSIS  | 0.04  | 0.1   | -0.30 | -1.8 | 100  |
+| GO_SIGNALING    | 0.003 | 0.01  | 0.35  | 1.9  | 200  |
+
+-   **`KEGG_CELL_CYCLE`** はp値が0.001、FDR補正後のp値が0.005であり、非常に有意にエンリッチされていることがわかる。正のエンリッチメントスコア (ES=0.42) と正規化エンリッチメントスコア (NES=2.1) が示すように、この遺伝子セットは遺伝子ランキングの上位にエンリッチされており、発現が増加していることを意味する。
+
+-   **`KEGG_APOPTOSIS`** は、負のエンリッチメントスコア (ES=-0.30) とNES (-1.8) を持ち、遺伝子セットがランキングの下位にエンリッチされている（発現が抑制されている）ことを示す。ただし、補正後のp値が0.1であるため、統計的に有意と見なすには微妙な結果。
+
+-   **`GO_SIGNALING`** は、正のエンリッチメントを示し、p値0.003、補正後p値0.01で有意。
+
+##### 結果のフィルタリング
+
+-   **`fgsea_result`の確認**: `fgseaSimple`の結果がデータフレーム形式であるため、`filter()`関数を使用して結果を絞り込むことができる
+
+-   **正のエンリッチメントスコア（NES \> 0）**と**負のエンリッチメントスコア（NES \< 0）**でフィルタリングする。
+
+-   `fgseaSimple` 関数で得られた `fgsea_result` を **NES \> 0**（正のエンリッチメントスコア）と **NES \< 0**（負のエンリッチメントスコア）でフィルタリングする
+
+-   `dplyr` パッケージを使うと簡単
+
+```{r}
+library(dplyr)
+
+# NES > 0 の結果をフィルタリング（上昇方向にエンリッチされたセット）
+fgsea_pos <- fgsea_result %>% filter(NES > 0 & pval < 0.05) # FDRを用いる場合はpvalの代わりに、padj
+head(fgsea_pos)
+
+# NES < 0 の結果をフィルタリング（減少方向にエンリッチされたセット）
+fgsea_neg <- fgsea_result %>% filter(NES < 0 & pval < 0.05) # FDRを用いる場合はpvalの代わりに、padj
+head(fgsea_neg)
+```
+
+##### 結果の視覚化
+
+-   `fgsea`では結果の視覚化も簡単に行える
+
+-   詳しくbioconductorの[ビネット](https://bioconductor.org/packages/release/bioc/vignettes/fgsea/inst/doc/fgsea-tutorial.html)を確認すること
+
+```{r}
+# 結果の視覚化
+plotEnrichment(gmt[["EGFR Downregulation R-HSA-182971"]], gene_list)
+```
+
+##### 詳細な解析のための設定
+
+-   **パーミュテーション回数（nperm）**を増やすことで、結果の信頼性を向上させることができる。
+
+-   通常は1000回のパーミュテーションがデフォルトですが、より高い精度を求める場合は回数を増やすことが推奨される。
+
+    -   nperm=1000であれば、p値は1e-3 (1%)まで計算でき、nperm=10000であればp値は1e-4 (0.1%)まで計算できる
+
+``` r
+fgsea_result <- fgseaSimple(pathways = gmt, stats = gene_list, nperm = 10000)
+```
+
+-   **スコアタイプ（scoreType）**: デフォルトでは `std`（標準）で、遺伝子の両方向（上昇・下降）の変動を評価するが、特定の方向だけを解析する場合には `"pos"`（上昇のみ）や `"neg"`（下降のみ）を指定できる。
+
+``` r
+fgsea_result_pos <- fgseaSimple(pathways = gmt, stats = gene_list, scoreType = "pos")
+```
+
+### clusterProfilerを用いた場合
+
+-   全体コードを示す
+
+``` r
+# clusterProfilerパッケージをインストールしてロード
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("org.Hs.eg.db")
+
+library(clusterProfiler)
+library(org.Hs.eg.db)  # ヒトのアノテーションデータベース
+
+# up-regulated 遺伝子のKEGG解析
+kegg_up <- enrichKEGG(gene = up_geneid, organism = "hsa", keyType = "kegg")
+# 結果を表示
+head(kegg_up)
+
+# up-regulated 遺伝子のGO解析（生物学的プロセス）
+go_up <- enrichGO(gene = up_geneid, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP")
+# 結果を表示
+head(go_up)
+
+# 結果を視覚化
+# dotplot(go_up)
+dotplot(kegg_up)
+
+# down-regulated 遺伝子に対しても同様に解析可能
+```
+
+-   各ステップと主要な関数について説明する。
+
+#### パッケージのインストールとロード
+
+`clusterProfiler` と `org.Hs.eg.db` は、Bioconductorからインストール。
+
+``` r
+# clusterProfilerパッケージと人のアノテーションデータベースのインストール
+BiocManager::install("clusterProfiler")
+BiocManager::install("org.Hs.eg.db")
+
+# パッケージの読み込み
+library(clusterProfiler)
+library(org.Hs.eg.db)  # ヒトのアノテーションデータベース
+```
+
+-   **`clusterProfiler`**: 遺伝子セットやパスウェイの解析を行うためのメインパッケージ。
+
+-   **`org.Hs.eg.db`**: ヒトの遺伝子に関連するアノテーションデータベースで、`GO`や`KEGG`の解析に使用。`ENTREZ ID`などの遺伝子IDを使って解析ができる。
+
+#### KEGGパスウェイ解析 (`enrichKEGG`)
+
+-   `enrichKEGG()` 関数を使用して、KEGGデータベースに基づいた遺伝子セット解析を行う。
+
+``` r
+# up-regulated 遺伝子のKEGGパスウェイ解析
+kegg_up <- enrichKEGG(gene = up_geneid, organism = "hsa", keyType = "kegg")
+```
+
+-   **`gene = up_geneid`**: 発現上昇した遺伝子のリストを指定。このリストは、`ENTREZ ID`などの遺伝子IDで指定する必要がある。
+
+-   **`organism = "hsa"`**: 解析対象の生物種を指定。`"hsa"`はヒト (Homo sapiens) を示す。他の種の場合、KEGGの生物コードに応じた値を指定。
+
+-   **`keyType = "kegg"`**: 遺伝子IDの形式を指定。例えば、`"ENTREZID"` や `"SYMBOL"` も指定可能。ここでは`KEGG`の形式を使用している。
+
+#### 結果の表示
+
+``` r
+# KEGGパスウェイ解析結果を表示
+head(kegg_up)
+```
+
+-   **`head(kegg_up)`** で結果を表示します。解析結果は、パスウェイ名、エンリッチメントスコア、p値、補正p値などが含まれたデータフレームとして出力されます。
+
+#### GO解析（生物学的プロセス, `enrichGO`）
+
+-   **GO解析**として生物学的プロセス（`BP`）に関連する解析を行う。
+
+``` r
+# up-regulated 遺伝子のGO解析（生物学的プロセス）
+go_up <- enrichGO(gene = up_geneid, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP")
+```
+
+-   **`gene = up_geneid`**: 発現上昇した遺伝子のリストを指定。このリストも`ENTREZ ID`などの形式で指定。
+
+-   **`OrgDb = org.Hs.eg.db`**: GO解析で使用するデータベースとして、ヒトのアノテーションデータベースを指定。
+
+-   **`keyType = "ENTREZID"`**: 使用する遺伝子IDの形式を指定。ここでは、`ENTREZ ID`を使用。
+
+-   **`ont = "BP"`**: GO解析のカテゴリを指定。`BP`は生物学的プロセス（Biological Process）を表す。他にも`MF`（分子機能, Molecular Function）、`CC`（細胞内局在, Cellular Component）がある。
+
+#### 結果の表示
+
+``` r
+# GO解析結果を表示
+head(go_up)
+```
+
+GO解析結果には、GOターム名、エンリッチメントスコア、p値、補正p値、関連する遺伝子リストなどが含まれる。
+
+#### 結果の視覚化
+
+-   `clusterProfiler` には、結果を簡単に視覚化するためのプロット関数がいくつか用意されている。
+
+-   **dotplot()** 関数を使うことで、エンリッチメント解析の結果をドットプロットで表示できる。
+
+``` r
+# KEGGパスウェイ解析の結果をドットプロットで視覚化
+dotplot(kegg_up)
+
+# GO解析の結果も同様にプロット可能
+# dotplot(go_up)
+```
+
+-   **`dotplot()`**: エンリッチメント解析の結果を視覚化する。ドットのサイズや色は、p値や遺伝子数に対応。
+
+### down-regulated 遺伝子に対しても同様に解析可能
+
+上記の解析は発現上昇遺伝子（up-regulated genes）に対して行ったが、発現抑制遺伝子（down-regulated genes）に対しても同様に実行できる。
+
+``` r
+# down-regulated 遺伝子に対しても同様に解析可能
+kegg_down <- enrichKEGG(gene = down_geneid, organism = "hsa", keyType = "kegg")
+go_down <- enrichGO(gene = down_geneid, OrgDb = org.Hs.eg.db, keyType = "ENTREZID", ont = "BP")
+```
+
+### cameraを用いた場合
+
+-   **`camera`** は、遺伝子セットが興味のある比較において一貫した変動を示すかどうかを統計的に評価するために使用する。
+
+-   **GSEA** は、各遺伝子が全体の中でどれだけ上位にランクされているかに注目するが、**camera** は、遺伝子セット全体で統計的な優位性があるかどうかを検証する。
+
+-   `limma` パッケージを使って `camera` を実行できる。
+
+-   全体のコードを示す：
+
+``` r
+library(limma)
+library(fgsea)
+
+# Reactomeの遺伝子セット (GSEAと同じデータを使用)
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+
+# インデックスを作成
+index <- ids2indices(gmt,names(gene_list))
+
+# 遺伝子セットのKEGGに対して cameraを適用
+camera_result <- camera(vfit, index, design)
+
+head(camera_result)
+```
+
+#### 遺伝子セットの準備 (`gmtPathways`)
+
+-   まず、使用する遺伝子セットデータベース（この例では `Reactome`）を取得
+
+\-`gmtPathways` 関数を使って、外部リソースから `.gmt` ファイル形式の遺伝子セットを取得。
+
+``` r
+# Reactomeの遺伝子セットを取得
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+```
+
+-   **`gmt`**: ここでは、`Reactome` データベースに含まれる各遺伝子セットのリストが取得される。
+
+#### 遺伝子セットのインデックスを作成 (`ids2indices`)
+
+`camera` 関数に適用するために、遺伝子セットに含まれる遺伝子と、解析に使う遺伝子リストの対応関係をインデックスとして作成。
+
+``` r
+# インデックスを作成 (解析に使う遺伝子リストから遺伝子セットに対応するインデックスを作成)
+index <- ids2indices(gmt, names(gene_list))
+```
+
+-   **`ids2indices`** 関数は、遺伝子セット内の遺伝子と解析対象の遺伝子リストの対応関係をインデックス形式で返す。
+
+-   このインデックスは `camera` 関数に渡され、解析対象の遺伝子リストがどの遺伝子セットに含まれているかを表す。
+
+#### `camera` の実行
+
+-   `camera` 関数は、指定された遺伝子セットが統計的に有意に上昇または下降しているかを評価。
+
+-   `voom` で処理したデータ（`vfit`）とデザイン行列（`design`）、そして先ほど作成したインデックスを使って解析を実行。
+
+``` r
+# cameraの実行 (vfit = voomでフィットしたモデル, index = 遺伝子セットのインデックス, design = デザイン行列)
+camera_result <- camera(vfit, index, design)
+```
+
+-   **`vfit`**: `voom` 関数で得られたフィットされたモデルオブジェクト。カウントデータを連続データに変換し、精度重み付きのデータを保持。
+
+-   **`index`**: 遺伝子セットと解析対象の遺伝子の対応関係を示すインデックス。
+
+-   **`design`**: 実験デザイン行列で、どのサンプルがどの条件に属するかを示す。
+
+#### 結果の表示
+
+`camera` の結果には、各遺伝子セットに対して p 値や FDR、方向性（上昇・下降）が含まれる。
+
+``` r
+# 結果の表示
+head(camera_result)
+```
+
+#### cameraの結果の解釈
+
+-   **PValue**: 遺伝子セットが統計的に有意であるかどうかを示すp値。小さいほど有意な結果を示す。
+
+-   **Direction**: 遺伝子セットのエンリッチメントの方向性を示す。`Up`はセットの遺伝子がコントラストで上昇していることを、`Down`はセットの遺伝子が減少していることを示す。
+
+#### `camera`と`fgsea`の違い
+
+| 特徴                   | camera                                         | fgsea                          |
+|------------------|--------------------------------|----------------------|
+| **使用するデータ**     | 統計量（t値など）                              | 遺伝子ランキング（連続値）     |
+| **遺伝子セットの評価** | 統計的な一貫性                                 | 上位・下位への偏り             |
+| **計算方法**           | 遺伝子セット内での分散・共分散を考慮           | ランクの累積スコア             |
+| **使用場面**           | 小さなセットでの解析や共通変動を評価したい場合 | 全体のランキングに注目した解析 |
+| **FDR補正**            | p値での補正                                    | パーミュテーションに基づく補正 |
+
+### cameraの利点
+
+-   **カバレッジ**が高く、**セット全体の統計的有意性**を検証することに優れている。
+
+-   共分散を考慮し、異なる遺伝子間の**相関関係を調整**できる。
+
+-   GSEAのようにスコアが偏りすぎない場面で有効。
+
+### GSEAとの比較
+
+-   `fgsea` では、ランキングを基にした遺伝子セットのエンリッチメントを評価する。
+
+-   これは、連続的に変動する遺伝子リストが対象だが、**camera** は、遺伝子セット全体の統計的有意性と共通性を評価するため、例えば**ノイズの多いデータセットや遺伝子間の相関が強いデータセット**において、**camera** の方が安定した結果が得られることが多いと考えられる。
+
+### roastの場合
+
+-   主に**遺伝子セット全体の方向性を評価**するために使用される。
+
+-   `roast` は、サンプル間での**ランダム化検定**を行い、遺伝子セット全体が上昇（または下降）しているか、または一部の遺伝子が上昇・一部が下降しているような**混合された方向性**を持っているかどうかを評価。
+
+-   `roast` は、**カウントデータに対して遺伝子セット全体のエンリッチメントを検定**するため、遺伝子間の相関やデータの分散を考慮しながら解析を行う。
+
+    -   **サンプル間でのランダム化を通じて結果の統計的有意性を評価**する点が特徴。
+
+-   まず、全体のコードを示す
+
+``` r
+# Reactome遺伝子セットの取得 (GSEAやcameraで使用したものと同じ)
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+
+# インデックスを作成 (解析に使う遺伝子リストから遺伝子セットに対応するインデックスを作成)
+index <- ids2indices(gmt, names(gene_list))
+
+# roastの実行 (voomでフィットしたモデル, index = 遺伝子セットのインデックス, design = デザイン行列)
+roast_result <- roast(vfit$E, index, design, contrast = contrast_matrix)
+```
+
+#### Reactome の遺伝子セットの取得
+
+-   まず、**Reactome** データベースから遺伝子セットを `.gmt` ファイル形式で取得。
+-   `gmtPathways` 関数は、オンラインから遺伝子セットデータをダウンロードし、各セットをリスト形式で取得。
+
+``` r
+# Reactome遺伝子セットの取得 (GSEAやcameraで使用したものと同じ)
+gmt <- gmtPathways("https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName=Reactome_2022")
+```
+
+#### インデックスを作成
+
+-   次に、`ids2indices` 関数を使用して、遺伝子セットと解析に使う遺伝子リストの対応関係をインデックス形式で作成。
+
+-   これにより、`roast` で使用する遺伝子セットを指定。
+
+``` r
+# インデックスを作成 (解析に使う遺伝子リストから遺伝子セットに対応するインデックスを作成)
+index <- ids2indices(gmt, names(gene_list))
+```
+
+-   **`index`** は、各遺伝子セットに含まれる遺伝子が解析対象の遺伝子リストに存在するかを示すインデックス。
+
+-   `camera` や `roast` の解析では、このインデックスを使用して遺伝子セットごとに解析を行う。
+
+#### `roast` の実行
+
+-   `roast` は、**voom** で精度重み付けされたデータ（`vfit`）と、デザイン行列（`design`）、コントラスト行列（`contrast_matrix`）を使って遺伝子セット全体の変動方向性を評価。
+
+``` r
+# roastの実行 (voomでフィットしたモデル, index = 遺伝子セットのインデックス, design = デザイン行列)
+roast_result <- roast(vfit$E, index, design, contrast = contrast_matrix)
+```
+
+-   **`vfit$E`**: `voom` で正規化および精度重み付けされた連続データ。`voom` によって RNA-seq カウントデータが線形モデルに適した連続データに変換された。
+-   **`index`**: `ids2indices` で作成した遺伝子セットのインデックス。解析に使う遺伝子がどの遺伝子セットに属しているかを示す。
+-   **`design`**: 実験条件を表すデザイン行列。各サンプルがどのグループに属しているかを示す。
+-   **`contrast_matrix`**: 比較したい条件（コントラスト）を指定。例えば、`処理群 vs コントロール群` の比較など。
+
+#### 結果の表示
+
+`roast` の結果には、各遺伝子セットに対して次の情報が含まれる。
+
+``` r
+# 結果の表示
+head(roast_result)
+```
+
+#### `roast` の結果の解釈
+
+`roast` の結果には、次の項目が含まれている。
+
+-   **p-value**: 遺伝子セット全体が統計的に有意であるかどうかを示すp値。
+
+-   **Direction**: 遺伝子セット全体の方向性を示す。`Up`は遺伝子セットが発現上昇していることを、`Down`は発現抑制されていることを示す。
+
+-   **Mixed**: 一部の遺伝子が上昇し、一部が下降している場合を評価。
+
+-   **pUp/pDown**: 上昇または下降した遺伝子セットに対するp値。
+
+`roast` は、セット全体で上昇・下降の一貫性があるか、セット内での遺伝子の変動が混在しているかを評価。
+
+### `camera`、`roast`、`fgsea` の比較
+
+| 特徴             | roast                            | camera                             | fgsea                                  |
+|------------------|------------------|------------------|--------------------|
+| **評価方法**     | サンプル間のランダム化検定を実施 | 遺伝子セット全体の一貫性を評価     | 遺伝子リスト内での上位・下位への偏り   |
+| **対象**         | 小〜中規模の遺伝子セットに適応   | 遺伝子間の相関も考慮した検定       | 全ての遺伝子をランキング化しスコア評価 |
+| **FDR補正**      | p値での補正                      | p値での補正                        | パーミュテーションベースで補正         |
+| **データの特性** | データ間の分散とランダム性を考慮 | 遺伝子間の共分散を考慮             | 遺伝子セットの累積エンリッチメント     |
+| **使用場面**     | 小規模な遺伝子セットや方向性評価 | 小規模〜中規模の遺伝子セットで安定 | 全体の発現変動を網羅的に評価           |
+
+### roastの利点
+
+-   **サンプル間でのランダム化検定**を行い、セット全体の変動方向性を評価するため、**ノイズが多いデータでも比較的強い**。
+
+-   **上昇/下降だけでなく、混合した変動（Mixed）も評価**できる。
