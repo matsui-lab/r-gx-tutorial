@@ -1,0 +1,583 @@
+---
+
+title: "Airwayで学ぶ：オミクス横断の変動（差分）解析 — 他オミクスにも通用する原理と実装"
+author: "matsui-lab / R omics演習"
+output:
+html\_document:
+toc: true
+toc\_float: true
+number\_sections: true
+df\_print: paged
+----------------
+
+> **ねらい**: Bioconductorの `airway` RNA-seq データで差分解析の基本〜応用を一気通貫で実装し、**遺伝子発現以外（プロテオーム、メタボローム、メチローム等）にも一般化できる考え方・枠組み**を整理する。
+
+# 0. セットアップ
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 5)
+set.seed(42)
+```
+
+## 必要パッケージの確認と（必要なら）導入
+
+```{r pkgs}
+need <- c(
+  # Bioconductor core
+  "SummarizedExperiment", "DESeq2", "airway", "limma", "edgeR",
+  # QC & 可視化
+  "ggplot2", "pheatmap", "patchwork", "tibble", "dplyr", "stringr",
+  # バッチ/潜在変数
+  "sva",
+  # 経路解析（任意）
+  "GSVA", "msigdbr", "AnnotationDbi", "org.Hs.eg.db",
+  # 効果量縮約
+  "apeglm"
+)
+
+inst <- sapply(need, requireNamespace, quietly = TRUE)
+if (any(!inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  bioc_pkgs <- c("SummarizedExperiment","DESeq2","airway","limma","edgeR","sva","GSVA","AnnotationDbi","org.Hs.eg.db","apeglm")
+  cran_pkgs <- setdiff(need, bioc_pkgs)
+  BiocManager::install(intersect(bioc_pkgs, need[!inst]), ask = FALSE, update = FALSE)
+  if (length(cran_pkgs) > 0) install.packages(intersect(cran_pkgs, need[!inst]))
+}
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment); library(DESeq2); library(limma); library(edgeR)
+  library(airway); library(ggplot2); library(pheatmap); library(patchwork)
+  library(tibble); library(dplyr); library(stringr); library(sva)
+})
+```
+
+# 1. コンセプト：オミクス横断の変動（差分）解析ワークフロー
+
+* **目標**: 条件A vs 条件Bの\*\*平均の違い（効果量）\*\*を、ノイズやバッチの影響を抑えつつ、\*\*多数の特徴量（遺伝子/タンパク/代謝物/ピーク/部位）\*\*に対して検出する。
+* **抽象モデル**：
+
+  * カウント系: \$\text{counts}*{gi} \sim \text{NB}(\mu*{gi}, \alpha\_g)\$、\$\log \mu\_{gi} = \log s\_i + X\_i^\top\beta\_g\$（`DESeq2`/`edgeR`）
+  * 連続量系: \$y\_{gi} = X\_i^\top\beta\_g + \varepsilon\_{gi}\$、\$\operatorname{Var}(\varepsilon\_{gi})\$は平均依存→`voom`で重み化し`limma`の経験ベイズで分散を**安定化**。
+* **論点（どのオミクスでも共通）**:
+
+  1. **QC/前処理**（欠損・外れ値・低発現除去・正規化）
+  2. **設計行列**（交絡の明示、ブロック/繰返しの扱い）
+  3. **尤度/分散モデル**の選択（NB vs 正規）と**分散の借用（moderation）**
+  4. **多重検定**（FDR制御）と**効果量の縮約**（小標本の過大評価抑制）
+  5. **生物学的解釈**（経路/集合の単位に持ち上げる）
+
+```{r, message=FALSE}
+suppressPackageStartupMessages(library(DiagrammeR))
+DiagrammeR::mermaid(
+  "graph TB\n  A[原データ: カウント/強度] --> B[QC: 欠損/外れ/低発現]\n  B --> C[正規化: サイズ因子/TMM/分位数]\n  C --> D[設計: ~ ブロック + 主要効果 + 交互作用]\n  D --> E1[NB-GLM (DESeq2/edgeR)]\n  D --> E2[voom + limma (連続/強度)]\n  E1 --> F[効果量縮約 + FDR]\n  E2 --> F\n  F --> G[解釈: MA/Volcano/PCA/ヒートマップ]\n  G --> H[集合解析: GSVA/fgsea]\n  style A fill:#f3f7ff,stroke:#6a8,stroke-width:1px;\n  style H fill:#fff7f3,stroke:#a86,stroke-width:1px;"
+)
+```
+
+# 2. データ読み込みとメタデータ整備（Airway）
+
+```{r load}
+data("airway")
+se <- airway
+colData(se)$dex <- relevel(factor(colData(se)$dex), ref = "untrt")
+colData(se)$cell <- factor(colData(se)$cell)  # ブロック（同一細胞株の対）
+se
+```
+
+**設計の考え方**: このデータは各細胞株で `untrt` と `trt` をペアで測定 → **ペアデザイン**。差分解析では `~ cell + dex` として**ブロック（cell）を共変量で吸収**し、`dex` の主効果を推定するのが定石。
+
+# 3. QCと前処理 — 原理・チェックリスト・Sequencing/MSの要点
+
+本節では **「何を、なぜ、どこで」** チェック・制御・処理するのかを、オミクス横断の原理としてまとめ、そのうえで **シークエンシング（RNA-seq想定）** と **質量分析（プロテオーム/メタボローム）** の要点に落とし込みます。実務では“装置→測定→前処理→統計”の各層で **系統誤差（bias）** と **偶然誤差（variance）** を切り分け、**シグナル保存** と **ノイズ抑制** のトレードオフを常に意識します。
+
+## 3.1 QCの設計思想（共通の5原則）
+
+1. **予防が最良のQC**：実験計画・ランダム化・ブロッキング・QCサンプル/スパイクインの設計で、統計補正に頼りすぎない。
+2. **層で考える**：$サンプル層（採取/処理）→ 計測層（装置/ラン）→ データ層（行列の欠損・外れ）→ 推定層（モデル/分散）$ のどこに問題があるかを同定。
+3. **外部基準＋内部整合**：外部基準（iRT/標準品/スパイクイン/遺伝子体カバレッジ等）と、内部整合（反復・相関・ペア一致）を併用。
+4. **ルールを先に決める**：フィルタ閾値・外れ値規則・バッチ補正の要否は、解析前にドキュメント化（“研究計画に準拠”）。
+5. **リークを避ける**：差分検定の目的変数に触れる操作（例：群ラベルを使った過学習的なノーマライズ/除外）は厳禁。
+
+## 3.2 共通チェックリスト
+
+* **サンプル識別**：ラベル取り違え/重複。遺伝的指紋（SNP）や性染色体マーカー、メタデータ整合で検出。
+* **量の健全性**：総シグナル（ライブラリサイズ/TIC）、非欠損率、上位特徴への偏り（トップ100比率）。
+* **技術一貫性**：QCリプリケートのCV、バッチ/ラン間のドリフト（RT/質量精度/GC含量/3’バイアス）。
+* **構造的交絡**：群とバッチ・施設・日付が完全交絡していないか（→推定不能）。
+* **外れ値**：PCA/距離ヒートマップ/ロバスト指標（MAD）で検出、**原因特定→処置**（やむを得ない場合のみ除外）。
+
+```{r qc-utils, message=FALSE}
+# サンプル単位の簡易QC要約（行=特徴、列=サンプルの行列/Assay想定）
+qc_sample_summary <- function(mat) {
+  stopifnot(is.matrix(mat) || is.data.frame(mat))
+  mat <- as.matrix(mat)
+  tibble::tibble(
+    sample = colnames(mat),
+    total_signal = colSums(mat, na.rm = TRUE),
+    nonzero_frac = colMeans(!is.na(mat) & mat > 0),
+    top100_frac = apply(mat, 2, function(x){
+      x <- x[!is.na(x)]; if (length(x)==0) return(NA_real_)
+      s <- sort(x, decreasing = TRUE); sum(head(s, 100))/sum(s)
+    })
+  )
+}
+```
+
+## 3.3 Sequencing（RNA-seq想定）のQC/前処理で見るもの
+
+* **生データ層**：リード品質（Phred分布）、アダプタ/オーバーリプレゼンテッド配列、GC分布、重複率、rRNA含有率、ストランド性。
+* **アライメント層**：マッピング率、ユニーク/マルチマップ、エクソン/イントロン/インタージェニック比率、遺伝子体カバレッジ（5’↔3’偏り）。
+* **カウント層**：ライブラリサイズ、低発現の占有、群内一貫性（PCA/距離）、トップ遺伝子への偏り。
+* **前処理の原理**：
+
+  * **低発現フィルタ**（偽陽性抑制＆検出力向上）
+  * **サイズ因子/構成比正規化**（DESeq2/edgeR）
+  * **設計：ペア・ブロックの明示**（`~ block + group`）
+  * **分散の借用と効果量縮約**（小標本での過大評価抑制）
+
+### AirwayでのQC（カウント層）
+
+```{r qc-libsize}
+# ライブラリサイズと低発現フィルタ
+libsize <- colSums(assay(se))
+q <- tibble::tibble(sample = names(libsize), libsize = libsize)
+
+p1 <- ggplot2::ggplot(q, ggplot2::aes(x = reorder(sample, libsize), y = libsize/1e6)) +
+  ggplot2::geom_col() + ggplot2::coord_flip() +
+  ggplot2::labs(x = NULL, y = "Library size (million reads)", title = "ライブラリサイズ")
+
+keep <- edgeR::filterByExpr(edgeR::DGEList(counts = assay(se)), group = colData(se)$dex)
+se_f <- se[keep, ]
+
+p2 <- ggplot2::ggplot(tibble::tibble(state=c("Before","After"), n=c(nrow(se), nrow(se_f))),
+             ggplot2::aes(x=state, y=n)) + ggplot2::geom_col() +
+  ggplot2::labs(x=NULL, y="残存特徴量数", title="低発現フィルタの効果")
+
+p1 + p2
+```
+
+```{r vst-pca, message=FALSE}
+# 正規化と次元圧縮（群分離/外れ値点検）
+dds <- DESeq2::DESeqDataSet(se_f, design = ~ cell + dex)
+dds <- DESeq2::estimateSizeFactors(dds)
+vsd <- DESeq2::vst(dds, blind = TRUE)
+
+print(DESeq2::plotPCA(vsd, intgroup = c("dex","cell")))
+
+mat <- SummarizedExperiment::assay(vsd)
+dist_mat <- dist(t(mat))
+pheatmap::pheatmap(as.matrix(dist_mat), annotation_col = as.data.frame(colData(se_f)[,c("dex","cell")]))
+```
+
+**判断の目安**（施設ベンチマークを作るのが推奨）
+
+* PCAで群が大まかに分かれる／ペアは近接。
+* ライブラリサイズやトップ100比率に極端な偏りがない。
+* 5’↔3’バイアスやrRNA混入が高いサンプルは要再評価（再ライブラリ化等）。
+
+## 3.4 質量分析（プロテオーム/メタボローム）のQC/前処理で見るもの
+
+* **装置層**：総イオンクロマトグラム（TIC）、MS1ピーク数、MS/MS獲得率、質量精度（ppm）、RTドリフト、iRT/標準品の安定性。
+* **同定/定量層**：PSM/ペプチド/タンパクのID数、ミスクリベージ率、アイソトープ比の異常、ピーク幅・シグナル形状、同定率のラン間低下。
+* **行列層**：非欠損率、QCリプリケートCV、サンプル間バッチ効果（PCA/距離）。
+* **前処理の原理**：
+
+  * **ログ変換**（右裾の圧縮）→ **分位数/ロバスト正規化**（総量差の補正）
+  * **欠損の機構を区別**：MCAR/MAR/MNAR（左打ち切り）。MNARには**左側代入**（MinDet/MinProb 等）を用いる。
+  * **QCサンプルでモニタ**：CV閾値（例：<20–30%を目安）で特徴選抜や装置異常の検知。
+
+### MS用テンプレ（表形式の強度行列 `X` とメタ `meta` を想定）
+
+```{r ms-qc-template, eval=FALSE}
+# X: rows=features(蛋白/ピーク), cols=samples; 値は raw intensity
+# 推奨: 先に log2 変換
+X <- log2(X + 1)
+
+# サンプルQCメトリクス
+qc_df <- qc_sample_summary(X) |> dplyr::left_join(meta, by=c("sample"="sample_id"))
+
+# 非欠損率と総シグナルのチェック
+library(ggplot2)
+GG1 <- ggplot(qc_df, aes(nonzero_frac, total_signal, label=sample, color=batch)) +
+  geom_point() + ggrepel::geom_text_repel(max.overlaps=20) +
+  labs(x="非欠損率", y="総シグナル", title="MS: サンプルQC散布図")
+
+# 正規化（例：分位数）
+Xn <- limma::normalizeBetweenArrays(as.matrix(X), method = "quantile")
+
+# 左側代入（簡易なMinProb風の自作関数）
+impute_minprob <- function(M, q=0.01, sd_factor=0.3){
+  M <- as.matrix(M)
+  for(i in seq_len(ncol(M))){
+    v <- M[,i]; obs <- v[!is.na(v)]
+    if(length(obs) < 5) next
+    mu <- stats::quantile(obs, probs=q, na.rm=TRUE)
+    s  <- stats::sd(obs, na.rm=TRUE)
+    miss <- is.na(v); n <- sum(miss)
+    if(n>0){
+      v[miss] <- stats::rnorm(n, mean=mu, sd=sd_factor*max(s, .001))
+    }
+    M[,i] <- v
+  }
+  M
+}
+Xi <- impute_minprob(Xn)
+
+# QCリプリケートのCV（meta$is_qc が TRUE のサンプルを想定）
+calc_cv <- function(x) stats::sd(x, na.rm=TRUE)/mean(x, na.rm=TRUE)
+qc_cols <- meta$sample_id[meta$is_qc]
+cv_feat <- apply(Xi[, qc_cols, drop=FALSE], 1, calc_cv)
+summary(cv_feat)
+
+# PCAでバッチ/群の分離と外れ値を確認
+pca <- prcomp(t(Xi), scale.=TRUE)
+plot(pca$x[,1], pca$x[,2], col=meta$batch, pch=19, xlab="PC1", ylab="PC2")
+```
+
+**判断の目安**
+
+* QCリプリケートのCVやID数がランにより劣化していないか（時系列に並べて確認）。
+* %非欠損と総シグナルの両軸で外れ点がないか。
+* RT/ppmのドリフトが基準内（施設のQC履歴と比較）。
+
+## 3.5 正規化（Normalization）の設計指針とメソッド比較
+
+**目的**：サンプル間の“量の差”や系統的な形状差（分布）を補正し、**真の群差**の検出力を高める。
+
+### 3.5.1 代表的メソッドと適用指針
+
+| メソッド                                | 主用途/前提                   | 何を合わせるか          | いつ使う               | 使わない/注意                                     |
+| ----------------------------------- | ------------------------ | ---------------- | ------------------ | ------------------------------------------- |
+| **サイズ因子（DESeq2: median-of-ratios）** | RNA-seqカウント              | 各サンプルの**スケール**   | 既定値。組成バイアスに強い      | 原データに**分位数正規化を直接かけない**                      |
+| **TMM（edgeR）**                      | RNA-seqカウント              | スケール（外れ/極端差をトリム） | RNA-seqの定番         | 全体の大半が変動する場合は要注意                            |
+| **Upper-quartile**                  | カウント/ピーク数                | 第3四分位でスケール       | 極端な上位が支配的          | 分布形の差は残る                                    |
+| **Quantile（分位数正規化）**                | **連続強度**（マイクロアレイ、プロテオーム） | **分布の形**を一致      | 技術差が主で**形を合わせたい**時 | RNA-seq**生カウントには非推奨**／多数が真に変動する状況では生物差を潰す恐れ |
+| **Cyclic loess**                    | 連続強度                     | 局所回帰で形を補正        | Dye bias/非線形歪み     | 欠損が多いと不安定                                   |
+| **VSN（分散安定化）**                      | 連続強度                     | 変動の平均依存を補正       | プロテオーム/アレイ等        | 係数推定に十分なデータが必要                              |
+| **CLR/ALR（組成）**                     | 相対量データ                   | 比率の幾何中心          | マイクロバイオーム等         | 零過剰への前処理（擬似カウント）が必要                         |
+
+**Quantile normalization の前提**：サンプル間で“真の分布”が概ね同じで、違いは主に技術的である——という仮定。**多数の特徴が本当にシフト**する実験（例：全体アップレギュレーション）では、生物学的差を打ち消す可能性がある。
+
+### 3.5.2 実装例（RNA-seqと連続強度）
+
+**RNA-seq（推奨：サイズ因子/TMM）**
+
+```{r norm-rnaseq}
+# DESeq2: median-of-ratios（既に本書のAirwayで使用）
+dds <- DESeq2::DESeqDataSet(se_f, design = ~ cell + dex)
+dds <- DESeq2::estimateSizeFactors(dds)  # サイズ因子
+sizeFactors(dds)
+
+# edgeR: TMM と Upper-quartile
+y <- edgeR::DGEList(counts = SummarizedExperiment::assay(se_f))
+y_tmm <- edgeR::calcNormFactors(y, method = "TMM")
+y_uq  <- edgeR::calcNormFactors(y, method = "upperquartile")
+```
+
+**連続強度（プロテオーム/アレイ：Quantile / Cyclic loess / VSN）**
+
+```{r norm-continuous, eval=FALSE}
+# X: log2強度行列（rows=features, cols=samples）
+# 欠損が多い場合は、まず“正規化に使う行”を一定の非欠損率で絞る
+keep <- rowMeans(!is.na(X)) >= 0.8
+X_core <- X[keep, ]
+
+# 分位数正規化（limma）
+Xq_core <- limma::normalizeBetweenArrays(as.matrix(X_core), method = "quantile")
+# 正規化係数を全体に適用する簡便法（列ごと順位置換のため本質的にはX_coreに限定）
+# 実務では missForest/DEP 等の欠損処理→正規化の順を検討
+
+# Cyclic loess
+Xcl_core <- limma::normalizeBetweenArrays(as.matrix(X_core), method = "cyclicloess")
+
+# VSN（分散安定化）
+fit_vsn <- vsn::vsn2(as.matrix(X_core))
+Xvsn_core <- vsn::predict(fit_vsn, as.matrix(X_core))
+```
+
+> **実務Tip**：MSでは **ログ→（軽い欠損処理）→正規化** の順が安定。欠損率が高い特徴は正規化の学習から外す（解析には残すかは別判断）。
+
+### 3.5.3 “どれを選ぶか”ミニ決定木
+
+```{r, message=FALSE}
+DiagrammeR::mermaid(
+  "flowchart TB
+  A[データ型] -->|整数カウント| B[RNA-seq/ピーク]-->C{多数の特徴が真に変動?}
+  C -- いいえ --> D[DESeq2サイズ因子 or edgeR TMM]
+  C -- はい --> E[設計の見直し/参照スパイク/UQなど保守的スケーリング]
+  A -->|連続強度| F[プロテオーム/アレイ]--> G{分布形の技術差が支配?}
+  G -- はい --> H[Quantile or Cyclic loess]
+  G -- いいえ/平均依存強い --> I[VSN or voom+limma]
+  A -->|組成| J[マイクロバイオーム] --> K[CLR/ALR + 零処理]
+  style H fill:#eef7ff,stroke:#6a8; style D fill:#eef7ff,stroke:#6a8; style I fill:#eef7ff,stroke:#6a8;"
+)
+```
+
+---
+
+## 3.6 前処理の原理と典型的フロー（共通）
+
+```{r, message=FALSE}
+DiagrammeR::mermaid(
+  "flowchart LR
+  A[生データ: FASTQ/mzML] --> B[基本QC: 品質/適合/同定]
+  B --> C[量の正規化: サイズ因子/分位数/TMM]
+  C --> D[欠損処理: 除外/代入 (機構別)]
+  D --> E[低発現/低情報量フィルタ]
+  E --> F[設計の明示: ~ block + group (+cov)]
+  F --> G[分散の借用/効果量縮約]
+  G --> H[検定とFDR]
+  H --> I[解釈: 可視化→集合解析]
+  style C fill:#f0fff4,stroke:#6a8; style D fill:#fff3e6,stroke:#a86; style G fill:#f6fff0,stroke:#6a8;"
+)
+```
+
+**欠損処理の考え方**（再掲）
+
+* **MCAR**：任意の手法でもバイアス小。
+* **MAR**：共変量をモデルへ/多重代入。
+* **MNAR**：左側代入（MinDet/MinProb等）や存在/非存在モデリング。
+
+## 3.7 バッチ・潜在変数の取り扱い
+
+* まず **設計に入れられる既知バッチは入れる**（`~ batch + block + group`）。
+* **未知の系統差**はSVA/因子解析で推定し共変量として追加。
+* **ComBat** は **群効果と交絡していない**場合に限る。
+
+```{r sva}
+mod  <- model.matrix(~ cell + dex, data = as.data.frame(colData(se_f)))
+mod0 <- model.matrix(~ cell,        data = as.data.frame(colData(se_f)))
+svobj <- sva::svaseq(assay(vsd), mod = mod, mod0 = mod0)
+head(svobj$sv)
+
+colData(se_f)$sv1 <- svobj$sv[,1]
+colData(se_f)$sv2 <- if (ncol(svobj$sv) >= 2) svobj$sv[,2] else 0
+```
+
+## 3.8 よくある落とし穴（Do/Don't）
+
+* **Do**：正規化の**前提**（分布仮定/欠損）を明記。除外・代入の基準は事前登録。
+* **Do**：ペアや反復は**設計でブロック**。PCAや距離で一致性をチェック。
+* **Don't**：RNA-seqの原カウントに**quantile**。群情報を使ったノーマライズ（情報リーク）。
+* **Don't**：群とバッチの完全交絡を**後処理で救おうとする**（設計に戻る）。
+
+---
+
+# 4. DESeq2（NB-GLM）による差分解析
+
+DESeq2（NB-GLM）による差分解析
+DESeq2（NB-GLM）による差分解析
+
+```{r deseq2-core}
+dds <- DESeq(dds)
+res <- lfcShrink(dds, coef = "dex_trt_vs_untrt", type = "apeglm")  # 効果量縮約
+summary(res)
+```
+
+```{r deseq2-plots}
+plotMA(res, ylim = c(-4,4))
+```
+
+```{r deseq2-table}
+res_tbl <- as.data.frame(res) |>
+  rownames_to_column("ensembl") |>
+  arrange(padj) |>
+  mutate(rank = row_number()) |>
+  relocate(rank)
+
+head(res_tbl, 10)
+```
+
+* `padj` はBH法でFDR。`log2FoldChange` は縮約済みで**過大評価を抑制**。
+* **効果量基準**を併用（例：`abs(log2FC) ≥ 1` かつ `FDR < 0.05`）→ 実用的で再現性が上がることが多い。
+
+```{r deseq2-export}
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+readr::write_csv(res_tbl, "results/deseq2_airway_dex.csv")
+```
+
+# 5. limma-voom（連続量/強度データ一般化の要）
+
+**なぜvoom?** 連続強度（プロテオームのlog2-intensity等）やカウントでも正規近似が妥当な範囲で、**平均-分散関係**を重みで補正 → `limma` の**経験ベイズ**で分散を安定化。
+
+### ペアデザインを random-like に扱う（duplicateCorrelation）
+
+```{r voom}
+y <- DGEList(counts = assay(se_f))
+y <- calcNormFactors(y)  # TMM
+
+design <- model.matrix(~ 0 + dex, data = as.data.frame(colData(se_f)))
+colnames(design) <- levels(colData(se_f)$dex)
+
+v <- voom(y, design, plot = TRUE)
+corfit <- duplicateCorrelation(v, design, block = colData(se_f)$cell)
+fit <- lmFit(v, design, block = colData(se_f)$cell, correlation = corfit$consensus)
+cont <- makeContrasts(trt_vs_untrt = trt - untrt, levels = design)
+fit2 <- contrasts.fit(fit, cont) |> eBayes()
+
+tt <- topTable(fit2, number = Inf) |> rownames_to_column("ensembl")
+head(tt, 10)
+```
+
+**ポイント**
+
+* `duplicateCorrelation` で**同一cell間の相関**を推定し、誤検出を抑える。
+* 連続データ（例：プロテオームのlog2強度）は、**log変換＋欠損処理**の上で `limma` をそのまま適用（後述）。
+
+# 6. バッチ・潜在変数の取り扱い（SVA/ComBat）
+
+**原則**: まずは**設計に組み込めるバッチは明示的に入れる**。未知の系統差はSVA等で推定して共変量として加える。
+
+```{r sva}
+mod  <- model.matrix(~ cell + dex, data = as.data.frame(colData(se_f)))
+mod0 <- model.matrix(~ cell,        data = as.data.frame(colData(se_f)))
+svobj <- sva::svaseq(assay(vsd), mod = mod, mod0 = mod0)
+head(svobj$sv)
+
+# 例：推定したSVを追加して再推定（DESeq2）
+colData(se_f)$sv1 <- svobj$sv[,1]
+colData(se_f)$sv2 <- if (ncol(svobj$sv) >= 2) svobj$sv[,2] else 0
+
+dds_sv <- DESeqDataSet(se_f, design = ~ cell + sv1 + sv2 + dex)
+dds_sv <- DESeq(dds_sv)
+res_sv <- lfcShrink(dds_sv, coef = "dex_trt_vs_untrt", type = "apeglm")
+summary(res_sv)
+```
+
+> **注意**: ComBat（`sva::ComBat`）は**群効果と完全に交絡していない**ことが前提。交絡している場合は**禁止**。必ず設計・実験計画段階で回避する。
+
+# 7. 経路・集合レベルでの解釈（GSVA + limma）【任意】
+
+**発想**: 遺伝子単位のノイズを減らし、集合（経路・複合体・GO）で**一貫した小さな変動**を拾う。
+
+```{r gsva, eval=TRUE}
+can_gsva <- requireNamespace("GSVA", quietly=TRUE) && requireNamespace("msigdbr", quietly=TRUE) &&
+            requireNamespace("AnnotationDbi", quietly=TRUE) && requireNamespace("org.Hs.eg.db", quietly=TRUE)
+
+if (can_gsva) {
+  library(GSVA); library(msigdbr); library(AnnotationDbi); library(org.Hs.eg.db)
+  # VST行列の遺伝子ID(ENSEMBL)→ENTREZへ
+  ens <- rownames(vsd)
+  eg  <- AnnotationDbi::mapIds(org.Hs.eg.db, keys = ens, keytype = "ENSEMBL", column = "ENTREZID")
+  vmat <- assay(vsd)
+  # ENTREZに置換し、NAを除去
+  rownames(vmat) <- eg
+  vmat <- vmat[!is.na(rownames(vmat)), ]
+
+  # Hallmark gene sets（ヒト）をENTREZで
+  m_df <- msigdbr(species = "Homo sapiens", category = "H")
+  gsets <- split(m_df$entrez_gene, m_df$gs_name)
+
+  gs <- GSVA::gsva(vmat, gsets, method = "gsva", kcdf = "Gaussian", mx.diff = TRUE, verbose = FALSE)
+
+  # limmaでスコア差分
+  design_g <- model.matrix(~ 0 + colData(se_f)$dex)
+  colnames(design_g) <- levels(colData(se_f)$dex)
+  fitg <- lmFit(gs, design_g)
+  contg <- makeContrasts(trt_vs_untrt = trt - untrt, levels = design_g)
+  fitg2 <- eBayes(contrasts.fit(fitg, contg))
+  top_gs <- topTable(fitg2, number = 20) |> rownames_to_column("geneset")
+  head(top_gs, 10)
+} else {
+  message("GSVA関連パッケージが揃っていないためスキップしました。")
+}
+```
+
+# 8. 他オミクスへ一般化するための設計指針（まとめ表）
+
+| データ型  | 例                      | 推奨表現              | 正規化                      | モデル                        | 重要論点                         |
+| ----- | ---------------------- | ----------------- | ------------------------ | -------------------------- | ---------------------------- |
+| カウント  | RNA-seq, ATAC-seqピーク数  | 整数カウント            | サイズ因子（DESeq2）/TMM（edgeR） | NB-GLM（DESeq2/edgeR）       | 低発現フィルタ, 分散トレンド, 効果量縮約       |
+| 連続強度  | プロテオームLFQ, メタボロームピーク強度 | \$\log\_2\$強度     | ログ変換＋分位数/ロバストスケール        | `voom`+`limma` / 直接`limma` | 欠損処理（MNAR/MAR）, ロバスト回帰, 重み付け |
+| 比率/組成 | マイクロバイオーム相対量           | CLR/ALR           | TSS→CLR等                 | ALDEx2/ANCOM-BC/ベータ回帰      | 疎性・零過剰, ライブラリサイズの交絡          |
+| 部位特異  | メチル化β値, PTM占有率         | \$\logit(\beta)\$ | SWAN/Noob等               | 線形モデル/ベータ回帰                | サンプル・部位の依存, バッチ補正            |
+
+**共通の落とし穴**
+
+* グループとバッチが**完全交絡**（→推定不能）。
+* ペア/ブロックを**設計に入れ忘れ**（→誤検出）。
+* 低発現を残す/過度なフィルタ（→FDR悪化/検出力低下）。
+
+# 9. プロテオーム/メタボローム特有の前処理（簡易テンプレ）
+
+```{r omics-templates, eval=FALSE}
+# ▼プロテオーム（log2 LFQの例）
+library(limma)
+X <- proteomics_matrix  # rows: proteins, cols: samples, values: log2 intensity
+# 欠損はMNARが多い → ロバストに: 例として最小値近傍での左側代入（簡易）。
+X_imp <- impute_MinProb(X, q = 0.01)  # 実務ではMSstatsやDEP等の関数を推奨
+# バッチがあるなら model.matrix(~ 0 + group + batch)
+design <- model.matrix(~ 0 + group)
+fit <- lmFit(X_imp, design) |> eBayes()
+# コントラスト: groupB - groupA
+cont <- makeContrasts(BvsA = groupB - groupA, levels = design)
+res  <- topTable(eBayes(contrasts.fit(fit, cont)), number = Inf)
+
+# ▼メタボローム（ピーク強度）
+Y <- metabolomics_matrix
+Y <- log2(Y + 1)
+Y <- normalizeBetweenArrays(Y, method = "quantile")
+design <- model.matrix(~ 0 + group)
+res <- topTable(eBayes(lmFit(Y, design)), number = Inf)
+```
+
+# 10. 解釈：表現・可視化の最小セット
+
+```{r viz}
+# Volcano
+volcano_df <- res_tbl |>
+  mutate(sig = padj < 0.05 & abs(log2FoldChange) >= 1)
+
+ggplot(volcano_df, aes(x = log2FoldChange, y = -log10(padj), color = sig)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = c(-1,1), linetype = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = 2) +
+  labs(title = "Volcano (DESeq2: dex trt vs untrt)", x = "log2FC", y = "-log10(FDR)") +
+  theme(legend.position = "bottom")
+
+# 上位遺伝子のヒートマップ
+top_ids <- volcano_df |> filter(sig) |> arrange(padj) |> slice_head(n = 40) |> pull(ensembl)
+pheatmap(assay(vsd)[top_ids, ], annotation_col = as.data.frame(colData(se_f)[,c("dex","cell")]))
+```
+
+**読み方**
+
+* Volcano の右上/左上が**上方/下方**で有意。
+* ヒートマップでは**群内一貫性**と**ブロック内の整合**を確認。
+
+# 11. 再利用のための関数化（最小ユーティリティ）
+
+```{r utils}
+run_deseq2 <- function(se, formula = ~ group, coef_name = NULL, lfc_shrink = TRUE) {
+  dds <- DESeqDataSet(se, design = formula) |> DESeq()
+  if (is.null(coef_name)) coef_name <- resultsNames(dds)[grep("_vs_", resultsNames(dds))[1]]
+  if (lfc_shrink) {
+    res <- lfcShrink(dds, coef = coef_name, type = "apeglm")
+  } else {
+    res <- results(dds, name = coef_name)
+  }
+  as.data.frame(res) |> rownames_to_column("feature")
+}
+```
+
+# 12. 付録：よくあるトラブルと対処
+
+* **`design` が単位行列に近い**（交絡/過剰分割）→ 設計見直し。
+* **`NA`/`NaN` が混入** → 事前に欠損処理/フィルタ。
+* **GSVAが遅い/落ちる** → gene setをHallmarkなど**小さめ**に、ID変換の整合を再確認。
+* **`gsub("\\..*$", "", gene)` のようなエスケープ** → R文字列中では `"\\."` のように**バックスラッシュを重ねる**（正規表現の`.`は任意文字）。
+
+# 13. セッション情報
+
+```{r session}
+sessionInfo()
+```
+
+---
+
+## 参考：この資料を別オミクスに持ち替える時の最低作業
+
+1. **データ行列**を `SummarizedExperiment` に格納（行=特徴、列=サンプル）。
+2. **設計行列**を作成：`~ block + group (+ covariates)`。
+3. **モデル選択**：カウント→`DESeq2`/`edgeR`、連続→`limma`/`voom`。
+4. **FDRと効果量閾値**を同時に設定（例：`FDR<0.05 & |log2FC|>=1`）。
+5. **集合・パスウェイ解析**に昇格（GSVA/fgsea など）。
