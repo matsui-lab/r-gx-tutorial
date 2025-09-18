@@ -1,0 +1,806 @@
+---
+title: "Rによる発現解析演習③ ~ 遺伝子・タンパク質のアノテーション"
+author: "matsui‑lab / R omics演習"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+# 目的とゴール
+
+本資料では **RNA‑seq（airway）** データを題材に、遺伝子やタンパク質に付随する
+**アノテーション（注釈）** の基礎を理解し、R で再現的に変換・統合する方法を学ぶ。
+
+具体的には、以下を目標とする。
+
+* アノテーションの定義と複数 ID 体系（Ensembl / Entrez / HGNC / UniProt）の俯瞰。
+
+* 実データで頻出する課題（ID 不一致・重複・版差・多対多）と対処法の紹介。
+
+* **EnsDb + OrgDb + AnnotationHub** を用いた堅牢な実装パターンの習得。
+
+* airway カウント表（Ensembl Gene ID）に **SYMBOL/ENTREZ/遺伝子長/生物型/染色体/UniProt** を付与する手順。
+
+* 再利用しやすい **R 関数雛形** の提供と演習課題。
+
+初心者でも読みやすいように、各概念を簡潔に説明し、重複を避けて構成している。
+
+# パッケージとデータの準備
+
+```{r}
+needs <- c("airway","SummarizedExperiment","DESeq2",
+           "AnnotationDbi","org.Hs.eg.db","AnnotationHub",
+           "ensembldb","HGNChelper","dplyr","tibble",
+           "stringr","readr","GenomicRanges","AnnotationFilter")
+inst <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(inst) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install(inst, update = FALSE, ask = FALSE)
+}
+lapply(needs, library, character.only = TRUE)
+
+# airway データの読み込み
+data(airway)
+se <- airway  # SummarizedExperiment
+head(rownames(se))  # Ensembl Gene ID が並んでいることを確認
+```
+
+# アノテーションとは
+
+アノテーションとは、配列や ID に **意味（属性）** を結び付ける写像である。
+
+例えば遺伝子 ID `ENSG…` からシンボル・Entrez ID・遺伝子名・タンパク質 ID などを引き出すことができる。
+別々の ID 空間（Ensembl ↔︎ UniProt など）間を行き来する変換もアノテーションの一種である。
+
+同じ生物学的実体に対して複数の ID が存在し、リリースや参照アセンブリによって対応が変わり得ることが重要な前提となる。
+
+## アノテーションのカテゴリと代表データベース
+
+アノテーションが付与する属性は多岐にわたる。主要なカテゴリと代表的なデータベース、R からの入り口を下表に整理する。
+
+| カテゴリ | 説明（例） | 主な DB | R からの入口（例） |
+| --- | --- | --- | --- |
+| **同一性・同定** | 安定 ID、別名、旧称、クロスリファレンス | Ensembl, NCBI Gene, HGNC | `org.Hs.eg.db`, `ensembldb`, `AnnotationHub` |
+| **構造・座標** | 染色体座標、エクソン/イントロン、biotype、タンパク質アイソフォーム | Ensembl, UniProt, Pfam/InterPro | `ensembldb`（`genes()`/`exons()`/`proteins()`）、`UniProt.ws` |
+| **機能** | GO、Reactome、KEGG、MSigDB など | GO, Reactome, KEGG, MSigDB | `clusterProfiler`, `msigdbr`, `ReactomePA` |
+| **文脈** | 組織・細胞型発現、細胞内局在、発達・時間軸 | GTEx, Human Protein Atlas | `hpar` など |
+| **相互作用・制御** | タンパク質間相互作用、複合体、転写因子標的 | STRING, BioGRID, TRRUST | `STRINGdb`, `igraph` |
+| **臨床・表現型・薬剤** | 疾患関連性、表現型語彙、薬剤標的 | DisGeNET, MONDO/DO, HPO, DrugBank, ChEMBL, DGIdb | `DOSE`, `disgenet2r`, API/TSV 取り込み |
+| **進化・系統** | オルソログ・パラログ、ファミリー、保存性スコア | Ensembl Compara, OrthoDB | `biomaRt`/`AnnotationHub` |
+| **証拠・品質** | GO/ECO のエビデンスコード、UniProt のレビュー状態、スコア | UniProt, GO/ECO | `AnnotationDbi::select(..., "EVIDENCE")` 等 |
+
+> **メモ：** ID の種類（例：Entrez、UniProt、Symbol）は DB ごとに異なるため、前段で ID を統一しておくことが必要である。
+
+# 遺伝子セット解析の基本
+
+遺伝子セット（gene set）は、語彙（用語・経路・表現型・薬剤標的など）と遺伝子集合を対応付けたものである。
+語彙を $v \in \mathcal{V}$、背景集合（ユニバース）を $U$ としたとき、各語彙 $v$ には集合関数 $S(v) \subseteq U$ が対応する。
+
+遺伝子セット解析では、差分遺伝子リストや順位付きリストと、データベース側の遺伝子集合との重なりを検定し、どの機能や経路が濃縮しているかを調べる。
+
+## ORA（過剰代表性解析）
+
+* **入力**：ヒット遺伝子集合 $H$（例：DEG）、背景集合 $U$、各遺伝子集合 $S_k$。
+* **検定**：超幾何分布（Fisher 片側検定と同値）。パラメータは $N=|U|,\ n=|H|,\ K=|S_k|,\ x=|H\cap S_k|$。片側の $p$ 値は次式で求める。
+
+$$p=\sum_{i=x}^{\min(K,n)} \frac{\binom{K}{i}\binom{N-K}{n-i}}{\binom{N}{n}}.$$ 
+
+* **手順**：
+  1. 背景 $U$ を先に固定（測定可能かつ解析に投入した遺伝子）。
+  2. ヒット集合 $H$ を作成（例えば FDR<0.05）。必要なら Up/Down で分けます。
+  3. 各語彙集合 $S_k$ との重なり $x$ を数え、p 値を計算。
+  4. 多重検定補正（BH など）を行う。
+
+* **よくある落とし穴**：背景 $U$ をヒト全遺伝子にしてしまうと過大有意になりがちです。極端に小さい・大きい集合は不安定である。
+
+**R 実装（最小例）**：
+
+```r
+# hits: SYMBOL ベクトル、universe: 背景 SYMBOL ベクトル
+ora_one <- function(hits, universe, set) {
+  H <- intersect(hits, universe); S <- intersect(set, universe)
+  N <- length(universe); n <- length(H); K <- length(S); x <- length(intersect(H, S))
+  # 超幾何分布に基づく片側検定
+  p_hyper <- phyper(x - 1, m = K, n = N - K, k = n, lower.tail = FALSE)
+  # Fisher 片側検定
+  mat <- matrix(c(x, n - x, K - x, N - K - (n - x)), nrow = 2)
+  p_fisher <- fisher.test(mat, alternative = "greater")$p.value
+  c(x = x, K = K, n = n, N = N, p_hyper = p_hyper, p_fisher = p_fisher)
+}
+```
+
+**clusterProfiler + msigdbr を用いた例**：
+
+```r
+library(msigdbr)
+library(clusterProfiler)
+msig <- msigdbr(species = "Homo sapiens", category = "H") |>
+  split(~ gs_name, drop = TRUE) |>
+  lapply(function(df) unique(df$gene_symbol))
+
+res <- enricher(gene = hits,
+                TERM2GENE = stack(msig)[,2:1],
+                universe = universe,
+                pAdjustMethod = "BH")
+```
+
+### ORA の具体例：Hallmark コレクションの富集解析
+
+本節では、airway データセットに対して過剰代表性解析を実施し、結果の可視化と解釈までを体系的に示す。解析の流れは以下である。
+
+1. **差分発現解析**によりヒット遺伝子集合 $H$ と背景集合 $U$ を定義する。
+2. **Hallmark 遺伝子集合**を msigdbr 経由で取得する。
+3. **clusterProfiler** の `enricher()` を用いて富集解析を行う。
+4. 棒グラフやドットプロットを用いて結果を可視化し、論理的に解釈する。
+
+#### 差分発現解析
+
+まず、SummarizedExperiment オブジェクト `se` を用いて DESeq2 による差分解析を行う。セルトタイプを共変量とし、デキサメタゾン処理の効果を評価する。`DESeqDataSet()` と `DESeq()` は `DESeq2` パッケージから提供される。
+
+```{r}
+# 必要パッケージの読み込み
+library(DESeq2)
+library(SummarizedExperiment)
+
+# SummarizedExperiment se から DESeqDataSet を構築
+dds <- DESeqDataSet(se, design = ~ cell + dex)
+# モデルのフィット
+dds <- DESeq(dds)
+# トリートメント効果に対応するコントラスト名を確認
+# 係数名に依存しない頑健な指定（airway想定の "trt" vs "untrt" があれば contrast を使う）
+dex_lvls <- levels(as.factor(colData(dds)$dex))
+if (all(c("trt","untrt") %in% dex_lvls)) {
+  res <- results(dds, contrast = c("dex", "trt", "untrt"), alpha = 0.05)
+} else {
+  # フォールバック: 係数名から自動推定（ただし一意に決まらない場合はエラー）
+  rn <- resultsNames(dds)
+  cand <- grep("^dex.*_vs_.*$", rn, value = TRUE)
+  if (length(cand) == 1) {
+    res <- results(dds, name = cand, alpha = 0.05)
+  } else {
+    stop(paste0(
+      "Could not identify a unique 'dex' coefficient.
+",
+      "levels(dex): ", paste(dex_lvls, collapse = ", "), "
+",
+      "resultsNames: ", paste(rn, collapse = ", ")
+    ))
+  }
+}
+
+# ヒット遺伝子：FDR<0.05 かつ log2FC>1
+hits <- rownames(res)[which(res$padj < 0.05 & res$log2FoldChange > 1)]
+# 背景集合：検定に含まれる遺伝子（NA でない行）
+universe <- rownames(res)[!is.na(res$padj)]
+```
+
+#### Hallmark 集合の取得
+
+Hallmark コレクションは高品質な機能的語彙を提供しており、富集解析の対象として有用である。以下では `msigdbr` パッケージを用いてヒト種の Hallmark 集合を取得し、語彙名ごとに遺伝子シンボルのリストに整形する。
+
+```{r}
+library(msigdbr)
+msig_tbl <- msigdbr(species = "Homo sapiens", category = "H")
+msig_list <- split(msig_tbl$gene_symbol, msig_tbl$gs_name)
+```
+
+#### clusterProfiler による ORA
+
+`enricher()` 関数にヒット集合・背景集合・語彙定義を与えて富集解析を実施する。語彙–遺伝子対応表は `stack()` で作成し、FDR 補正法を BH 法とする。
+
+```{r}
+library(clusterProfiler)
+term2gene <- stack(msig_list)[, 2:1]
+colnames(term2gene) <- c("gs_name", "gene_symbol")
+ora_res <- enricher(gene       = hits,
+                    TERM2GENE  = term2gene,
+                    universe   = universe,
+                    pAdjustMethod = "BH",
+                    qvalueCutoff = 0.25)
+# 結果の概要を確認
+head(as.data.frame(ora_res))
+```
+
+#### ORA 結果の可視化と解釈
+
+clusterProfiler では `barplot()` や `dotplot()` により上位語彙を容易に可視化できる。ここでは GeneRatio（ヒット集合のうち語彙集合に属する割合）を軸としたグラフを描く。点の大きさはヒット数、色は FDR を表す。
+
+```{r}
+library(enrichplot)
+library(ggplot2)
+barplot(ora_res, showCategory = 10, x = "GeneRatio") +
+  ggtitle("Top enriched Hallmark pathways (ORA)") +
+  theme_minimal()
+dotplot(ora_res, showCategory = 10) +
+  ggtitle("Dot plot of enriched Hallmark terms") +
+  theme_minimal()
+```
+
+棒グラフでは、横軸が GeneRatio、縦軸が語彙名であり、GeneRatio の大きさからヒット集合中での寄与度が読み取れる。ドットプロットは、点のサイズがヒット遺伝子数、色が調整済み $p$ 値を示す。これらの図から、デキサメタゾン処理によってステロイド応答や炎症関連の Hallmark 経路が有意に富集していることが明らかになり、結果を生物学的知見と対比しながら考察できる。
+
+## GSEA（Gene Set Enrichment Analysis）
+
+GSEA は順位付きリストに対して集合の濃縮を評価する。各遺伝子に符号付き統計量（例：logFC×−log$p$）を付与してソートし、集合内の遺伝子がリストの上位に偏っているかを評価する。
+
+手順は以下の通りである。
+
+1. 各遺伝子に連続スコアを割り当て、降順に並び替える。
+2. 各集合 $S_k$ で **Enrichment Score (ES)** を計算し、集合サイズの影響を除くため **Normalized ES (NES)** に変換。
+3. ラベル置換やサンプル置換により帰無分布を構築し、FDR を推定。
+4. 濃縮に貢献した遺伝子（leading edge）を解釈する。
+
+**R 実装（fgsea 例）**：
+
+```r
+library(fgsea)
+# ranks: named numeric ベクトル (names = SYMBOL)。大きいほど上位。
+fg <- fgsea(pathways = msig,
+            stats    = ranks,
+            minSize  = 10,
+            maxSize  = 500,
+            nperm    = 10000)
+```
+
+### GSEA の具体例：連続スコアに基づく解析
+
+Gene Set Enrichment Analysis (GSEA) では、ヒット・非ヒットの二値化を避け、全遺伝子の統計量に基づいて経路の偏在を検出する。以下では airway データセットの DESeq2 結果を用い、Hallmark コレクションに対する GSEA を実施する。
+
+#### ランキングの構築
+
+最初に、DESeq2 から得られた統計量 `stat` を遺伝子シンボルにマッピングし、名前付きベクトル `ranks` を作成する。重複シンボルは平均値で統合し、NA 値や空文字を除外してから降順にソートする。
+
+```{r}
+# rowData(se) に SYMBOL が格納されていると仮定
+gene_sym <- SummarizedExperiment::rowData(se)[rownames(res), "SYMBOL"]
+ranks <- res$stat
+names(ranks) <- gene_sym
+ok <- !is.na(names(ranks)) & names(ranks) != ""
+ranks <- ranks[ok]
+ranks <- tapply(ranks, names(ranks), mean)
+ranks <- sort(ranks, decreasing = TRUE)
+```
+
+#### fgsea による GSEA
+
+`fgsea()` 関数を用いて、Hallmark 集合に対する GSEA を実行する。反復回数 (`nperm`) を十分に設定し、Normalized Enrichment Score (NES) に基づいて結果をソートする。
+
+```{r}
+library(fgsea)
+set.seed(123)
+fgsea_res <- fgsea(pathways = msig_list,
+                   stats    = ranks,
+                   minSize  = 10,
+                   maxSize  = 500,
+                   nperm    = 10000)
+fgsea_res <- fgsea_res[order(-fgsea_res$NES), ]
+head(as.data.frame(fgsea_res))
+```
+
+#### GSEA 結果の可視化と解釈
+
+`fgsea` パッケージには、個々の経路に対するランク曲線を描く `plotEnrichment()` が実装されている。また、NES を棒グラフとしてまとめることで、誘導・抑制された経路を俯瞰できる。
+
+```{r}
+# 最上位の経路名を取り出す
+top_pathway <- fgsea_res$pathway[1]
+plotEnrichment(msig_list[[top_pathway]], ranks) +
+  ggtitle(paste("GSEA enrichment curve:", top_pathway))
+
+# 上位 10 経路の NES を表示
+library(ggplot2)
+ggplot(fgsea_res[1:10, ], aes(reorder(pathway, NES), NES)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Pathway", y = "Normalized Enrichment Score (NES)",
+       title = "Top enriched Hallmark pathways (GSEA)") +
+  theme_minimal()
+```
+
+エンリッチメント曲線では、横軸が遺伝子のランク、縦軸が累積スコアを示し、ピークの高さと位置から集合内の遺伝子がリスト上位に偏っている程度が読み取れる。棒グラフでは正の NES が処理による誘導、負の NES が抑制を示す。FDR が 0.25 未満の経路を有意とみなすことが多いが、解析の目的に応じて閾値を調整する。
+
+## GO タームの冗長性と縮約（rrvgo）
+
+Gene Ontology (GO) は階層構造を持つため、富集解析で得られる GO タームはしばしば相互に包含関係を持ち、類似した生物学的意味を共有する。その結果、ORA や GSEA では似たような GO タームが多数並び、解釈の妨げとなることがある。**rrvgo** は GO ターム間の意味的類似度を計算し、代表的な用語にまとめることで冗長性を縮約するためのパッケージである。
+
+### GO タームの冗長性
+
+GO は有向非循環グラフで定義され、親子関係が存在する。例えば「inflammatory response」と「innate immune response」は部分的に重複する遺伝子集合を持ち、両者が同時に有意となることがある。こうした冗長な結果をそのまま報告すると、どのプロセスが本質的に関与しているのかが曖昧になる。
+
+### rrvgo による縮約手法
+
+rrvgo は、GOSemSim に基づいて GO ターム間の意味的類似度行列を構築し、スコア（−log10 調整 $p$ 値など）を用いて代表タームを選択する。ここでは上記で求めたヒット集合と背景集合を用いて GO Biological Process (BP) への ORA を行い、その結果を rrvgo で縮約する。
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(rrvgo)
+
+# GO タームへの ORA（Biological Process）
+ego <- enrichGO(gene     = hits,
+                universe = universe,
+                OrgDb    = org.Hs.eg.db,
+                ont      = "BP",
+                pAdjustMethod = "BH",
+                qvalueCutoff  = 0.25,
+                readable = TRUE)
+
+# 類似度行列の計算：term ID を用いる
+go_ids <- ego@result$ID
+simMatrix <- rrvgo::calculateSimMatrix(go_ids,
+                                       orgdb    = "org.Hs.eg.db",
+                                       ontology = "BP",
+                                       method   = "Wang")
+
+# スコア付け：ここでは FDR を −log10 に変換
+scores <- setNames(-log10(ego@result$p.adjust), ego@result$ID)
+
+# 類似タームの縮約（閾値は 0.7）
+reducedTerms <- rrvgo::reduceSimMatrix(simMatrix,
+                                       scores,
+                                       threshold = 0.7,
+                                       orgdb = "org.Hs.eg.db")
+
+# 可視化：ツリーマップと散布図
+rrvgo::plotTreemap(reducedTerms) +
+  ggtitle("Reduced GO terms (BP) via rrvgo")
+rrvgo::plotScatter(reducedTerms) +
+  ggtitle("Semantic similarity of GO terms (BP)")
+```
+
+この処理では、まず `enrichGO()` により GO 生物学的プロセスの ORA を実行し、調整済み $p$ 値からスコアを付与している。`calculateSimMatrix()` は GO ターム間の意味的類似度を Wang 法で計算し、`reduceSimMatrix()` は設定した閾値に基づき高類似度タームを代表タームにまとめる。可視化では、ツリーマップの各長方形がクラスタを表し、その面積がスコアに対応する。散布図では類似度に基づく配置が示され、クラスター間の関係を直感的に把握できる。閾値を低くするとより多くのタームが統合され、解析の焦点が絞られる。報告に際しては代表タームとそのクラスター構成タームを併記することで、冗長性を減らしつつ解釈の情報を保持できる。
+
+## ユニバース（背景）の選び方
+
+背景集合 $U$ の決め方は ORA/GSEA の結果に大きく影響する。
+
+原則として、「今回の手順なら偶然でもヒットになり得た候補の全体」を背景とします。具体的には次の 4 ステップで決める。
+
+1. **測定可能性**：今回のプラットフォームで観測可能だったもの（RNA‑seq なら QC 後に残った遺伝子、プロテオームなら同定済みタンパク質など）。
+
+2. **解析に投入した実績**：差分解析に実際に入れたもの（独立フィルタ通過後など）。
+
+3. **ID マッピング可能性**：用いる語彙 DB へ確実に写像できたもの。語彙集合側も $S := S \cap U$ にトリミングする。
+
+4. **仮説による条件付け（必要に応じて）**：例えばタンパク質コーディング遺伝子のみ、分泌タンパク質のみ、ミトコンドリア遺伝子のみ等。条件をつけたら背景・語彙の両方に同じフィルタを適用する。
+
+代表的な解析シナリオと推奨背景の例を以下に示す。
+
+| 解析シナリオ | 推奨背景 $U$ | 実装の要点 | コメント |
+| --- | --- | --- | --- |
+| **RNA‑seq の ORA** | QC 後かつ検定対象になった遺伝子（測定可能かつ独立フィルタ通過）に ID マップ可能な集合 | `enricher(..., universe = U)`。語彙集合は `S ← S∩U` にトリミング | 現実的で最も公平。ヒト全遺伝子を背景にしない |
+| **プロテオームの ORA** | 同定済み UniProt AC（FDR/スコア閾値通過） | UniProt を基準にそろえる（遺伝子へのアップマップは避ける） | 未同定タンパク質を背景に含めない |
+| **特定仮説下（例：分泌タンパク質）** | Secretome として候補になり得た集合（SignalP 等で定義） | 背景も語彙も Secretome でトリミング | 条件付けの妥当性を事前に明記 |
+| **パネル測定** | パネルに収載された遺伝子全体 | メーカー付与 ID を基準に整合 | パネル外を背景に入れない |
+
+背景を適切に定義することで、過大有意や過小有意を防ぐ。
+
+# ID マッピングとルール
+
+下流解析では「何と何を、どのように対応付けるか」が重要である。ID 間の対応付けには大きく 2 種類のアプローチがある。
+
+## ルールベース（決定的）マッチング
+
+ID キーで機械的に写像する方式で、再現性が高く監査しやすいのが特長である。よく登場するパターンと代表的な対応ルール、注意点をまとめる。
+
+| パターン | 典型例 | 対応ルール | 注意点・例 |
+| --- | --- | --- | --- |
+| **1:1** | Ensembl gene → HGNC Symbol | 完全一致で置換 | 別名・旧名の正規化が前提。例：`IL8` → `CXCL8` |
+| **1:多** | Gene → UniProt アイソフォーム | Swiss‑Prot（レビュー済）優先 → canonical → その他 | ルールを事前に明文化。例：`FKBP5` の代表アイソフォームを canonical とする |
+| **多:1** | Peptide 群 → Protein | 和・平均・最大などで集約。加重平均（ペプチド数重み）も可 | 集約関数をプロトコルに明記。共有ペプチドは重みを下げる |
+| **多:多** | Gene ↔︎ Pathway | 全一致・任意一致、経路被覆率で閾値設定 | 背景と閾値で結果が変わる。例：Reactome 経路の被覆率を計算 |
+
+**よく使う集約・選択ルール**
+
+* 選択：Swiss‑Prot（レビュー済）優先、canonical アイソフォーム優先、エビデンススコアが高いもの優先など。
+
+* 集約：和・平均・中央値・最大や重み付き平均（証拠やユニーク度、ペプチド本数による）。
+
+* 被覆指標：経路被覆率（命中遺伝子／経路遺伝子）やドメイン被覆率。
+
+解析結果には **マッピング率・未対応 ID 一覧・適用ルール** を残しておくと、後でアノテーション品質を評価しやすくなる。
+
+## 統計的マッチング（集合 vs 集合）
+
+集合同士の重なりが偶然以上かを検定する方式です。ここまでで紹介した ORA/GSEA が代表例で、ヒット集合や順位付きリストを語彙集合と照合する。背景と集合サイズの扱いが重要であることに留意してもらいたい。
+
+## 競合型と自己完結型
+
+遺伝子セット検定には、集合外と比較する **競合型（competitive）** と、集合内だけで効果を調べる **自己完結型（self‑contained）** がある。
+
+* 競合型：集合外と比べて集合内がどれだけ強いかを検定。例：`limma::camera` は遺伝子間相関を補正して競合型の検定を行う。
+
+* 自己完結型：集合内だけで効果があるかを検定。例：`limma::roast`。サンプル数が少ない場合や相関が強い場合はこちらが有利なことがある。
+
+迷ったら、群比較で厳しめの判定をしたい場合は `camera`、集合の存在自体を検定したい場合は `roast` が参考になる。
+
+# 主要アノテーション DB の対応表
+
+複数の ID や属性を扱う際は、基準とするデータベースや ID を明確にすることが重要である。主要なデータベースを粒度とともに整理する。
+
+| DB | 対象・粒度 | 主な ID 例 | 強み | 注意点 |
+| --- | --- | --- | --- | --- |
+| **Ensembl** | 遺伝子・転写産物・タンパク質（GRCh38 推奨） | ENSG… / ENST… / ENSP… | 階層関係が明瞭で座標情報が豊富 | リリース差で属性が変わる。ID は安定だが属性が更新される |
+| **Entrez Gene** | 遺伝子 | 例：7157 | 歴史的に広く用いられ、OrgDb との親和性が高い | 廃止 ID や統合履歴に注意 |
+| **HGNC** | ヒト遺伝子の承認シンボル | TP53 など | 正式シンボルの管理 | 俗称や旧称が多数あり、重複シンボルに注意 |
+| **UniProtKB** | タンパク質（アイソフォーム含む） | P0xxxx など | 注釈が充実し、レビューの有無がわかる | 同一遺伝子から多くのアイソフォームがあり 1:多 対応 |
+
+# 課題と解決の原則
+
+実データでは以下のような課題に直面する。
+
+1. **版差（リリース差）**：Ensembl v104 と v110 で属性やクロスリファレンスが変わる。
+
+2. **多対多**：Ensembl gene ↔︎ UniProt のように 1 遺伝子が多数のアイソフォームに対応する。
+
+3. **旧シンボル・俗称**：HGNC 非承認名が混入し、ID マッチングで欠落する。
+
+4. **重複シンボル**：同一シンボルが複数遺伝子に紐づくため行が重複し、集約ルールが必要になる。
+
+5. **アセンブリ差**：GRCh37 vs GRCh38 で座標や収録遺伝子が異なる。
+
+これらに対処するための設計原則を以下にまとめます。
+
+* **原則 A：ソース固定** … Ensembl/UniProt 等、1 つの版を基準として統一する。
+
+* **原則 B：再現性** … AnnotationHub などで取得日・版を記録しておく。
+
+* **原則 C：粒度一貫性** … gene レベルか transcript/protein レベルか、粒度を最初に固定する。
+
+* **原則 D：タイブレークルール** … 多対多の際の選択ルール（Swiss‑Prot 優先など）を事前に定義する。
+
+* **原則 E：検証** … 手計算やスポットチェックで変換の妥当性を確認する。
+
+# R での実装（airway）
+
+以下では、airway データを用いてアノテーションを付与する基本パターンを示す。必要なパッケージがインストールされていない場合は、BiocManager でインストールする。
+
+## パッケージとデータの準備
+
+```{r}
+needs <- c("airway","SummarizedExperiment","DESeq2",
+           "AnnotationDbi","org.Hs.eg.db","AnnotationHub",
+           "ensembldb","HGNChelper","dplyr","tibble",
+           "stringr","readr","GenomicRanges","AnnotationFilter")
+inst <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(inst) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install(inst, update = FALSE, ask = FALSE)
+}
+lapply(needs, library, character.only = TRUE)
+
+# airway データの読み込み
+data(airway)
+se <- airway  # SummarizedExperiment
+head(rownames(se))  # Ensembl Gene ID が並んでいることを確認
+```
+
+## EnsDb（GRCh38 最新）の取得
+
+```{r}
+ah <- AnnotationHub::AnnotationHub()
+q <- AnnotationHub::query(ah, c("EnsDb", "Homo sapiens", "GRCh38"))
+edb <- q[[length(q)]]  # 一番新しいものを取得
+edb
+# 再現性確保のため `AnnotationHub::hubCache()` と `AnnotationHub::hubUrl()` をメモしておくとよい
+```
+
+## Ensembl Gene から属性付与（SYMBOL/ENTREZ/遺伝子名/biotype/染色体/遺伝子長）
+
+Ensembl Gene ID から遺伝子の基本属性（SYMBOL、ENTREZ ID、遺伝子名、biotype、染色体名、遺伝子長）を付与するためのワークフロー全体を把握しましょう。ここでは次のようなステップに分けて処理します。
+
+1. **対象遺伝子の選択** — 大きなデータセットでは、まずサンプルコードの動作確認のために対象遺伝子を一部だけ抽出するのが常套手段です。サブセットのサイズを `subset_size` で制御します。
+2. **Ensembl ID → SYMBOL/ENTREZ の変換** — `AnnotationDbi::select()` を用いて OrgDb から ID をマッピングし、さらに `HGNChelper` でシンボルを正規化します。
+3. **遺伝子属性の取得** — EnsDb から gene_name や biotype、染色体名など gene レベルの情報を取り出します。
+4. **遺伝子長の計算** — 各遺伝子に対応するエクソン領域を集めて重なりを統合し、総塩基数を算出します。
+5. **情報の統合とクリーンアップ** — 取得した属性を一つのデータフレームにまとめ、既存の `rowData` と結合します。
+
+以下では各ステップごとにコードを分け、処理内容や関数の使い方を確認しながら進めます。
+
+### 1. 対象遺伝子のサブセット
+
+分析対象にする Ensembl Gene ID を用意します。演習では計算コストを抑えるために 1,000 件だけ抽出します。全遺伝子で試す場合は `subset_size <- Inf` としてください。
+
+```{r}
+# サブセットする遺伝子数
+subset_size <- 1000  # 必要に応じて変更。Inf にすると全件
+
+# SummarizedExperiment から Ensembl ID を取得し、サブセット
+ensg_full <- rownames(se)
+if (is.finite(subset_size)) {
+  ensg <- head(ensg_full, subset_size)
+} else {
+  ensg <- ensg_full
+}
+
+# 抽出した ID の先頭を確認
+head(ensg)
+```
+
+### 2. OrgDb による ID マッピングとシンボル正規化
+
+`AnnotationDbi::select()` はキーと列名を指定してデータベースから情報を取り出す汎用インターフェースです。ここでは Ensembl ID をキーとし、遺伝子シンボル (`SYMBOL`) と Entrez ID (`ENTREZID`) を取得します。取得したシンボルは `HGNChelper` で推奨名に正規化します。
+
+```{r}
+# Ensembl → SYMBOL/ENTREZ のマッピング
+map_org <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys    = ensg,
+  keytype = "ENSEMBL",
+  columns = c("SYMBOL", "ENTREZID")
+)
+
+# SYMBOL の正規化（旧名の修正）
+map_org$SYMBOL_clean <- HGNChelper::checkGeneSymbols(map_org$SYMBOL)$Suggested.Symbol
+
+# 確認：先頭 6 行を表示
+head(map_org)
+```
+
+上記の結果から、1 つの Ensembl ID が複数のシンボルや Entrez ID に対応する場合があることが分かります。この 1:多関係への対応は後ほど統合ステップで処理します。
+
+### 3. EnsDb から遺伝子属性を取得
+
+EnsDb オブジェクトには gene、transcript、exon など各レベルの属性が格納されています。`ensembldb::genes()` 関数に `GeneIdFilter` を指定することで対象の遺伝子のみを抽出し、欲しい列だけを取り出します。
+
+```{r}
+# gene レベルの属性を取得：gene_name, biotype, 染色体名
+gattr <- ensembldb::genes(
+  edb,
+  filter      = AnnotationFilter::GeneIdFilter(ensg),
+  return.type = "DataFrame",
+  columns     = c("gene_id","gene_name","gene_biotype","seq_name")
+) |> as.data.frame()
+
+# 確認：先頭 6 行を表示
+head(gattr)
+```
+
+ここで取得した `gene_name` は Ensembl が付与する正式名称であり、`biotype` には protein_coding などの種別が、`seq_name` には染色体名が含まれます。
+
+### 4. エクソン長の計算
+
+遺伝子長は、対応する全エクソン領域を統合した塩基数として定義します。EnsDb では `ensembldb::exons()` に `GeneIdFilter` を渡すと対象遺伝子のエクソンを抽出できるので、それらを遺伝子 ID ごとに分割し、`reduce()` で重なりを解消して長さを計算します。
+
+```{r}
+# エクソンを抽出し gene_id ごとに分割
+exn <- ensembldb::exons(
+  edb,
+  filter = AnnotationFilter::GeneIdFilter(ensg)
+)
+
+ex_by_gene_list <- split(exn, exn$gene_id)
+
+# 各遺伝子のエクソン長を計算
+len_tbl <- tibble(
+  gene_id     = names(ex_by_gene_list),
+  exon_len_bp = vapply(ex_by_gene_list, function(gr){
+    sum(GenomicRanges::width(GenomicRanges::reduce(gr)))
+  }, numeric(1))
+)
+
+# 確認：先頭 6 行を表示
+head(len_tbl)
+```
+
+このように `vapply()` を使うことで、戻り値の型が明示され、ループ処理よりも高速かつ安全に計算できます。
+
+### 5. 取得した情報の統合
+
+ここまでで得た `map_org`、`gattr`、`len_tbl` を統合して、Ensembl ID ごとに 1 行のデータフレームにまとめます。複数行に対応する Ensembl ID については先頭行のみを採用しています。
+
+```{r}
+# map_org と gattr, len_tbl をマージして ann_gene を作成
+ann_gene <- map_org |>
+  dplyr::distinct(ENSEMBL, SYMBOL_clean, ENTREZID) |>
+  dplyr::group_by(ENSEMBL) |>
+  dplyr::slice(1) |>
+  dplyr::ungroup() |>
+  dplyr::rename(gene_id = ENSEMBL, SYMBOL = SYMBOL_clean, ENTREZID = ENTREZID) |>
+  dplyr::left_join(gattr, by = "gene_id") |>
+  dplyr::left_join(len_tbl, by = "gene_id")
+
+# 確認：先頭 6 行を表示
+head(ann_gene)
+```
+
+### 6. rowData への結合とクリーンアップ
+
+最後に、作成した `ann_gene` を既存の `rowData(se)` に結合します。既存の列との重複を避けるため、いったん `gene_id` 列を退避し、結合後に `coalesce()` で片方が欠損している情報を補完します。不要になった列はまとめて削除します。
+
+```{r}
+# 既存 rowData を data.frame に変換
+rd0 <- as.data.frame(SummarizedExperiment::rowData(se))
+if ("gene_id" %in% names(rd0)) {
+  rd0 <- dplyr::rename(rd0, gene_id_old = gene_id)
+}
+
+# 結合時のクリーニング関数
+clean_cols <- function(df){
+  df %>%
+    dplyr::mutate(
+      SYMBOL   = dplyr::coalesce(.data$SYMBOL, .data$symbol),
+      ENTREZID = dplyr::coalesce(.data$ENTREZID, as.character(.data$entrezid)),
+      gene_name     = dplyr::coalesce(.data$gene_name.y,     .data$gene_name.x),
+      gene_biotype  = dplyr::coalesce(.data$gene_biotype.y,  .data$gene_biotype.x),
+      seq_name      = dplyr::coalesce(.data$seq_name.y,      .data$seq_name.x)
+    ) %>%
+    dplyr::select(
+      -dplyr::any_of(c(
+        "symbol","entrezid",
+        "gene_name.x","gene_name.y",
+        "gene_biotype.x","gene_biotype.y",
+        "seq_name.x","seq_name.y"
+      ))
+    )
+}
+
+# rowData との結合
+rd <- rd0 %>%
+  tibble::rownames_to_column("gene_id") %>%
+  dplyr::left_join(ann_gene, by = "gene_id") %>%
+  clean_cols() %>%
+  tibble::column_to_rownames("gene_id")
+
+# 統合したデータを SummarizedExperiment に書き戻し
+SummarizedExperiment::rowData(se) <- S4Vectors::DataFrame(rd)
+
+# 結果確認：先頭 6 行
+rd[1:6, c("SYMBOL","ENTREZID","gene_name","gene_biotype","seq_name","exon_len_bp")]
+```
+
+TPM や RPKM のような長さ補正指標では、ここで計算した遺伝子長が重要な役割を果たします。TPM は次式で定義されます。
+
+$$
+\mathrm{TPM}_i = \frac{10^6 \times \frac{\mathrm{counts}_i}{L_i}}{\sum_j \frac{\mathrm{counts}_j}{L_j}}
+$$
+
+ここで $L_i$ は遺伝子 $i$ の長さ（bp）です。
+
+## Gene → Protein（Ensembl protein / UniProt）
+
+遺伝子からタンパク質アイソフォームへの対応は 1:多 であり、どのアクセッションを代表として扱うかを決める必要があります。ここでは Swiss‑Prot 形式の UniProt アクセッションを優先し、該当がなければ最初のものを採用するルールで進めます。手順は次の通りです。
+
+1. Ensembl Gene ID に対応するタンパク質 ID と UniProt アクセッションを取得する。
+2. 複数アイソフォームが存在する場合に代表となる UniProt ID を選ぶ関数を用意する。
+3. gene_id ごとに代表タンパク質 ID と UniProt アクセッションを集約する。
+4. 集約した情報を `rowData` に結合する。
+
+### 1. タンパク質 ID と UniProt アクセッションの取得
+
+`ensembldb::proteins()` 関数を使って、対象遺伝子に対応するタンパク質レベルの情報を取得します。`columns` には必要な列名を列挙します。
+
+```{r}
+# Gene → protein ID と UniProt AC の取得
+prot_map <- ensembldb::proteins(
+  edb,
+  filter  = AnnotationFilter::GeneIdFilter(ensg),
+  columns = c("gene_id","protein_id","uniprot_id")
+) |> as.data.frame()
+
+# 確認：先頭 6 行を表示
+head(prot_map)
+```
+
+得られた `prot_map` には各 gene_id について複数行が含まれており、protein_id や uniprot_id が欠損している場合もある点に注意します。
+
+### 2. 代表 UniProt アクセッションの選択ルール
+
+複数のアイソフォームがある場合、Swiss‑Prot 形式のアクセッションを優先し、無ければ最初に見つかったアクセッションを返す関数を定義します。このようにルールを関数にまとめておくと再利用しやすくなります。
+
+```{r}
+pick_uniprot <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  pat <- "^[A-NR-Z][0-9][A-Z0-9]{3}[0-9]$"  # Swiss‑Prot AC のパターン
+  sp <- x[stringr::str_detect(x, pat)]
+  if (length(sp) > 0) return(sp[1])
+  x[1]
+}
+```
+
+### 3. gene_id ごとの代表値を計算
+
+`dplyr::group_by()` と `summarise()` を用いて、gene_id 単位に代表的なタンパク質 ID と UniProt アクセッションを集計します。`first()` はベクトルから最初の非欠損値を取り出す便利な関数です。
+
+```{r}
+prot_best <- prot_map |>
+  dplyr::group_by(gene_id) |>
+  dplyr::summarise(
+    ENSP_first   = dplyr::first(na.omit(protein_id)),
+    UniProt_best = pick_uniprot(uniprot_id),
+    .groups = "drop"
+  )
+
+# 確認：先頭 6 行
+head(prot_best)
+```
+
+### 4. rowData への統合
+
+集計した `prot_best` を既存の `rowData(se)` に結合します。左側に gene_id を含むデータフレーム、右側に集計結果を置いて `left_join()` するのが基本パターンです。
+
+```{r}
+rd2 <- as.data.frame(SummarizedExperiment::rowData(se)) |>
+  tibble::rownames_to_column("gene_id") |>
+  dplyr::left_join(prot_best, by = "gene_id") |>
+  tibble::column_to_rownames("gene_id")
+
+# SummarizedExperiment に書き戻す
+SummarizedExperiment::rowData(se) <- S4Vectors::DataFrame(rd2)
+
+# 結果確認
+rd2[1:6, c("SYMBOL","ENSP_first","UniProt_best")]
+```
+
+この一連の操作により、遺伝子 ID からタンパク質へのマッピングと多対多関係の解決を体系的に理解できます。解析の目的に応じて canonical のみを選ぶか全アイソフォームを保持するかなど、ルールを明確にしておくことが重要です。
+
+## シンボル重複の集約例
+
+RNA‑seq では同一シンボルが複数の Ensembl Gene に対応する場合があり、カウント行を合算して扱うことがあります。ここではシンボル単位でカウント行を和で集約する例を、次の 2 ステップに分けて示します。
+
+1. グループキーとして使う遺伝子シンボルを取り出し、集約対象を絞り込む。
+2. `rowsum()` を用いて同じシンボルの行を集約する。
+
+### 1. グループキーの作成
+
+```{r}
+# カウントテーブルとシンボルの取得
+cts  <- SummarizedExperiment::assay(se, "counts")
+syms <- SummarizedExperiment::rowData(se)$SYMBOL
+
+# 集約対象をフィルタ
+ok   <- !is.na(syms) & syms != ""
+
+# シンボル別の件数をざっと確認
+head(table(syms[ok]))
+```
+
+### 2. 行の集約
+
+```{r}
+cts_sym <- rowsum(cts[ok, , drop = FALSE], group = syms[ok])
+
+# 集約後の行数と列数
+dim(cts_sym)
+
+# 集約結果の先頭 6 行
+head(cts_sym)
+```
+
+このように、データの粒度を揃えるための集約処理では「何を単位とするか」を明確にし、適切な統計量（和・平均・最大など）を選択することが重要です。集約後に元の Ensembl ID を保持したい場合や、どの遺伝子がどのシンボルにマッピングされたかを追跡したい場合は、事前にマッピング表を用意しておくと安全です。
+
+# シナリオ事例と Tips
+
+* **別名によるマッチング漏れ**：airway データでは GR 応答遺伝子（`FKBP5`, `TSC22D3` など）が典型的に上昇するが、シンボル正規化を怠ると別名（`GILZ ⇄ TSC22D3`, `IL8 ⇄ CXCL8`）が原因で GSEA のヒットが消失することがある→ *対策*: OrgDb で SYMBOL を付与し、HGNChelper で旧名を修正。背景を `rowData` 由来で固定。
+
+* **背景の取り違え**：ORA の背景をヒト全遺伝子にすると、測定され得ない遺伝子が混ざり有意度が過大になることがある。→ *対策*: 背景は「カウントテーブルに存在し QC を通過した遺伝子集合」とし、そのサイズ `length(universe)` を結果と一緒に記録する。
+
+* **Gene→Protein の 1:多**：DEG をタンパク質経路に写像する際、1 遺伝子が複数の UniProt アイソフォームに対応し、経路被覆率や部位特異の解釈が揺れる。→ *対策*: Swiss‑Prot 優先＋canonical のみを採用、または「全アイソフォーム集合で被覆最大化」などルールを明記し一貫適用する。
+
+# 演習課題
+
+1. airway に **SYMBOL/ENTREZ/biotype/染色体/遺伝子長** を付与し、`rowData` を整備せよ。
+
+2. 上記を関数 `annotate_genes()` に一般化し、任意サブセットでも良いので検証表を作成せよ（手動スポットチェックを含む）。
+
+3. Gene→Protein 対応を取得し、UniProt ベースの表を作成。タイブレークルールを明記して説明せよ。
+
+4. SYMBOL 重複行の集約（和/平均/最大のいずれか）を実装し、集約前後でサンプル別総カウントがどう変わるかを確認せよ。
+
+5. 遺伝子長から **TPM** を算出し、DESeq2 の正規化カウントなど既存の正規化量と相関を確認せよ。
+
+# 付録：典型的な落とし穴と対策
+
+| 落とし穴 | 症状 | 原因 | 速攻の対策 |
+| --- | --- | --- | --- |
+| **版差（Ensembl/UniProt）** | クロス参照が取れない | 取得時期が異なる | AnnotationHub の ID と取得日を記録し、同じ ID で固定 |
+| **旧シンボル** | NA・ミスマッチ | 別名・非承認名 | HGNChelper で正規化してから照合 |
+| **多対多** | 行が爆発・重複 | アイソフォームが多数存在 | タイブレークルール（Swiss‑Prot 優先など）を文書化し適用 |
+| **アセンブリ差** | 染色体・座標が合わない | GRCh37/38 の混在 | EnsDb は GRCh38 指定で統一 |
+| **粒度の混在** | gene と transcript が混在 | 前処理設計不足 | 粒度（gene/transcript/protein）を最初に固定 |
+
+---
+
+この資料では、アノテーションと遺伝子セット解析の基礎を体系的にまとめた。実際の解析では、目的やデータの特性に合わせて背景の定義やマッピングルールを適切に設定し、再現性のあるワークフローを構築することが重要である。

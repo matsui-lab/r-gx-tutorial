@@ -1,0 +1,618 @@
+---
+title: "オミクス解析のネットワーク解析・演習資料（相関／WGCNA／知識グラフ）"
+author: "matsui-lab / R omics演習"
+output:
+html_document:
+toc: true
+toc_float: true
+number_sections: true
+df_print: paged
+---
+# オミクス解析のネットワーク解析・演習資料（相関／WGCNA／知識グラフ）
+
+**ねらい**
+RNA-seq を例に、(A) 相関ネットワーク、(B) WGCNA、(C) 知識グラフ（STRING / HumanBase）を使ったネットワーク解析の“ナイーブ→課題→解決”を体系的に学ぶ。最終的に **データ駆動モジュール** と **既知ネットワーク** を重ねて仮説を立て、再現性の高い知見へ収束させるワークフローを実装する。
+
+## -1. 背景：ネットワーク生物学／医学の射程
+
+**学習目標**
+
+* ネットワークで生命現象を捉える意義（"個の遺伝子"ではなく"関係"を見る）を短時間で把握する。
+* データ駆動（相関・部分相関・WGCNA）と知識駆動（PPI/知識グラフ）の役割分担を理解する。
+* 本演習（A–H）へスムーズに接続できる概念の地図を持つ。
+
+### なぜネットワークか（3つの視点）
+
+1. **機能は関係性から生まれる（創発）**：単一遺伝子の寄与より、\*\*群れ（モジュール）\*\*の相互作用が表現型を規定。
+2. **冗長性とロバスト性**：多重経路・バックアップにより**撹乱に強い**。ハブ阻害は大きな効果を持ち得る。
+3. **多面的影響（多面発現）**：1遺伝子が複数経路に分散して影響（**副作用/合併症**の理解）。
+
+### 基本概念（用語ミニ辞典）
+
+* **ノード/エッジ**：分子（遺伝子/タンパク質/代謝物）とその関係（相関、物理相互作用、制御）。
+* **属性つきネットワーク**：ノード/エッジに表現量、効果量、p値、組織などの**属性**を持たせる。
+* **重み・方向・符号**：強さ（重み）、因果の向き（方向）、促進/抑制（符号）。
+* **モジュール（コミュニティ）**：密につながる部分ネットワーク。WGCNAはここを**データから抽出**。
+* **中心性**：次数（degree）、媒介（betweenness）、固有ベクトル（eigenvector）など**重要度指標**。
+* **経路と近接**：最短路長・ネットワーク距離。**薬剤–疾患の近接**は再目的化の指標。
+* **マルチレイヤ**：PPI × 共発現 × 代謝 × 転写制御 × 表現型…を**層**として重ねる考え方。
+
+### 概念と方法の枠組み（問題設定の地図）
+
+|           | **データ駆動**（観測から推定）                          | **知識駆動**（蓄積の活用）                              |
+| --------- | ------------------------------------------ | -------------------------------------------- |
+| **記述/探索** | 相関ネットワーク、WGCNA、部分相関（GGM）で**構造とモジュール**を見つける | STRING/HumanBase/Gene Ontology で**既知関係**を重ねる |
+| **予測/機構** | 予測・特徴量化（モジュール固有量ME、中心性）、擬似因果（Do-Why的解析は別章） | **ネットワーク近接**で薬剤候補や**疾患モジュール**の機構仮説           |
+
+> 本演習は左上（データ駆動の探索）を中心に、右上（知識重ね合わせ）で検証・解釈を補強する。
+
+### ネットワーク医学の要点（最小限）
+
+* **疾患モジュール仮説**：疾患関連遺伝子は相互作用ネットワーク上で**局在**する。
+* **薬剤再目的化**：疾患遺伝子集合 \$A\$ と薬剤標的集合 \$B\$ の**ネットワーク距離** \$d\_{AB}\$ と、ランダム化分布からの \$Z\$ スコアで近接性を評価し、低いほど有望。
+* **合併症/副作用ネットワーク**：モジュールの**重なり**やハブの共有で説明。
+
+### 品質と落とし穴（設計原則）
+
+1. **共変量と合成制約**：バッチ、細胞組成、ライブラリサイズは**前処理で回帰/正規化**（→ 本資料 A・C 参照）。
+2. **多重検定**：エッジは \$O(G^2)\$。**FDR管理**と**安定性選択**をセットで。
+3. **小標本**：縮小推定（shrinkage）やガラス化（EBICglasso）で**疎化**。
+4. **再現性**：ブートストラップ、`modulePreservation`、別コホート検証。
+5. **文脈依存性**：組織/細胞型/条件で**エッジは変わる**（HumanBase 等で文脈を付与）。
+
+### 今回の演習への接続（ロードマップ）
+
+1. **相関の罠を知る** → 2) **部分相関で直接性** → 3) **WGCNAでモジュール** → 4) **知識グラフで裏取り** → 5) **仮説形成と可視化**。
+   成果物：再現性ある**モジュール仮説**（ハブ候補＋関連経路＋文脈）とレポート用ネットワーク図。
+
+```mermaid
+flowchart LR
+  A[発現行列(genes×samples)] --> B1[相関/ロバスト相関]
+  A --> B2[部分相関(GGM)]
+  A --> B3[WGCNA(加重ネット)]
+  B1 & B2 & B3 --> C[モジュール/ハブ抽出]
+  D1[STRING PPI] --> E[重ね合わせ]
+  D2[HumanBase(組織特異)] --> E
+  C --> E
+  E --> F[仮説: 経路/薬剤/組織適合]
+  F --> G[報告: 図表CSV/Cytoscape]
+```
+
+---
+
+## 0. 環境準備
+
+```r
+# 推奨: R>=4.3, Bioconductor>=3.19
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7.5, fig.height = 5)
+set.seed(42)
+
+needs <- c(
+  # データ&前処理
+  "airway", "SummarizedExperiment", "edgeR", "limma",
+  # 相関/可視化/グラフ
+  "WGCNA", "psych", "corpcor", "qgraph", "igraph", "ggraph", "tidygraph",
+  # 知識グラフ
+  "STRINGdb",
+  # tidy系
+  "dplyr", "tibble", "tidyr", "readr", "ggplot2"
+)
+
+# 不足パッケージのインストール（Bioconductor/CRAN）
+inst <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
+if (length(inst) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  bioc_pkgs <- c("airway","SummarizedExperiment","edgeR","limma","WGCNA","STRINGdb")
+  BiocManager::install(intersect(inst, bioc_pkgs))
+  cran_pkgs <- setdiff(inst, bioc_pkgs)
+  if (length(cran_pkgs) > 0) install.packages(cran_pkgs)
+}
+
+lapply(needs, library, character.only = TRUE)
+```
+
+**データ**：`airway`（ヒト気道上皮細胞、デキサメタゾン処理の有無）。
+
+```{r}
+# データ読み込み
+data("airway", package = "airway")  # ← ここで 'airway' オブジェクトが作られる
+aw <- airway
+aw <- aw[, aw$dex %in% c("trt","untrt")] # 8サンプル
+counts <- as.matrix(SummarizedExperiment::assay(aw, "counts"))
+coldata <- as.data.frame(SummarizedExperiment::colData(aw))
+coldata$dex <- droplevels(coldata$dex)
+
+# 低発現の遺伝子を除去し、logCPMへ（相関/ネットワーク向けに連続量化）
+dge <- edgeR::DGEList(counts)
+dge <- edgeR::calcNormFactors(dge, method = "TMM")
+keep <- edgeR::filterByExpr(dge, group = coldata$dex)
+dge <- dge[keep, ]
+logcpm <- edgeR::cpm(dge, log = TRUE, prior.count = 1)
+
+# 変動上位の遺伝子を抽出（例：上位3000）
+var_genes <- head(order(matrixStats::rowVars(logcpm), decreasing = TRUE), 100)
+X <- logcpm[var_genes, ] # genes x samples
+```
+
+> **注意**：ネットワーク解析は相関構造に敏感。**正規化・ロバスト化**（logCPM / VST、外れ値対策、バッチ対策）が肝。
+
+---
+
+## A. ナイーブな相関ネットワーク → 課題 → 解決
+
+### A1. ナイーブ法（Pearson 相関 + 閾値）
+
+```{r}
+# 相関行列とp値
+pc <- psych::corr.test(t(X), method = "pearson", adjust = "none")
+C  <- pc$r; P <- pc$p
+# 閾値ネットワーク（例: |r|>0.7 & p<0.05）
+thr <- 0.7
+adj <- (abs(C) > thr) & upper.tri(C)
+edges <- which(adj, arr.ind = TRUE)
+Edf <- tibble::tibble(
+  from = rownames(C)[edges[,1]],
+  to   = colnames(C)[edges[,2]],
+  r    = C[adj]
+)
+G0 <- igraph::graph_from_data_frame(Edf, directed = FALSE)
+plot(G0, vertex.size=3, vertex.label=NA)
+```
+
+**課題**
+(1) 多重検定（|E|≈G(G−1)/2）で偽陽性が激増
+(2) 共通因子（バッチ、ライブラリサイズ、細胞組成）による**見かけ相関**
+(3) RNA-seq の**合成制約（compositionality）**
+(4) 閾値選択の恣意性・再現性不足
+
+### A2. 解決の方向性
+
+* **FDR制御**：エッジ単位の p を `p.adjust(, method="BH")`。
+* **ロバスト相関**：`WGCNA::bicor`（biweight）、外れ値に鈍感。
+* **縮小相関（shrinkage）**：`corpcor::cor.shrink` で分散安定化。
+* **部分相関 / 逆分散**：共通因子を除いた**条件付き依存**（→ B 参照）。
+* **安定性選択**：ブートストラップで再現性の高いエッジのみ温存。
+
+```{r}
+# ロバスト相関 + FDR
+rb <- WGCNA::bicor(t(X), maxPOutliers = 0.05)
+upper <- upper.tri(rb)
+# 近似p値（サンプル小のため相関→t→pの近似を使用）
+n <- ncol(X)
+tval <- rb * sqrt((n-2)/(1-rb^2))
+pval <- 2*pt(abs(tval), df=n-2, lower.tail=FALSE)
+padj <- matrix(p.adjust(pval[upper], method="BH"), nrow=sum(upper))
+# 例: FDR<0.05 かつ |r|>0.6
+sel <- (abs(rb)[upper] > 0.6) & (padj < 0.05)
+idx <- which(upper, arr.ind = TRUE)[sel, , drop=FALSE]
+Edf2 <- tibble::tibble(
+  from = rownames(rb)[idx[,1]],
+  to   = colnames(rb)[idx[,2]],
+  r    = rb[upper][sel]
+)
+G1 <- igraph::graph_from_data_frame(Edf2, directed = FALSE)
+plot(G1, vertex.size=3, vertex.label=NA)
+```
+
+---
+
+## B. 部分相関ネットワーク（Gaussian Graphical Model / EBICglasso）
+
+**狙い**：相関の因果連鎖を分解し、**直接的**な関係（条件付き独立）を抽出。
+
+```{r}
+# X: genes x samples の連続量（例: voomの v$E / DESeq2::vst / rlog 等）
+X <- as.matrix(X)
+
+# 0) 変動ゼロ/非有限の遺伝子を除去
+keep <- apply(X, 1, sd, na.rm = TRUE) > 0 & rowSums(is.finite(X)) == ncol(X)
+X <- X[keep, , drop = FALSE]
+
+# （任意）p≫nで不安定なら、上位変動遺伝子に絞る
+# topN <- 2000; if (nrow(X) > topN) {
+#   v <- matrixStats::rowVars(X); X <- X[order(v, decreasing=TRUE)[seq_len(topN)], , drop=FALSE]
+# }
+
+# 1) 遺伝子ごとにZ標準化
+Z <- t(scale(t(X)))
+
+# 2) 収縮相関で正定値な相関行列を作る（推奨）
+# install.packages("corpcor") が未インストールなら実行
+S <- corpcor::cor.shrink(t(Z), verbose = FALSE)   # genes x genes（正定値）
+
+# 3) EBICglasso によるネットワーク推定
+Q <- qgraph::EBICglasso(S, n = ncol(Z), gamma = 0.5)
+diag(Q) <- 0  # 念のため対角は0
+
+# 4) 行列→エッジへ
+upper <- upper.tri(Q)
+idx <- which(upper & (abs(Q) > 0), arr.ind = TRUE)
+Epc <- tibble::tibble(
+  from = rownames(Q)[idx[,1]],
+  to   = colnames(Q)[idx[,2]],
+  w    = Q[idx],
+  sign = sign(Q[idx])
+)
+Gpc <- igraph::graph_from_data_frame(Epc, directed = FALSE)
+
+plot(Gpc, vertex.size = 3, vertex.label = NA)
+```
+
+**利点**：共通因子に起因する見かけ相関を抑制。**疎**なネットワークで解釈性↑。
+**注意**：サンプルサイズに敏感（n≳サンプル数の対数×定数）。正規性・連続量前提。
+
+---
+
+## C. WGCNA によるモジュール検出と表現型連関
+
+**アイデア**：ソフト閾値化（scale-free を指向）で加重ネットワーク→トポロジー重視のクラスタリング→**モジュール（共発現群）**→\*\*モジュール固有ベクトル（ME）\*\*と表現型の相関。
+
+```r
+# WGCNAはサンプルを列に要求
+Xw <- t(X)  # samples x genes
+allowWGCNAThreads()
+
+# 1) ソフト閾値パワーの選定
+pks <- pickSoftThreshold(Xw, powerVector = 1:20, networkType = "signed")
+power <- pks$powerEstimate %||% 6  # 推定不能時のフォールバック
+
+# 2) ブロック解析でモジュール検出
+net <- blockwiseModules(
+  Xw,
+  power = power,
+  networkType = "signed",
+  TOMType = "signed",
+  minModuleSize = 30,
+  mergeCutHeight = 0.25,
+  reassignThreshold = 0,
+  numericLabels = TRUE,
+  pamRespectsDendro = FALSE,
+  saveTOMs = FALSE
+)
+
+modules <- net$colors
+ME <- moduleEigengenes(Xw, colors = modules)$eigengenes
+
+# 3) 例: デキサメタゾン(dex)との関連
+trait <- model.matrix(~ 0 + coldata$dex)
+colnames(trait) <- levels(coldata$dex)
+ct <- cor(ME, trait, use = "p")
+pt <- corPvalueStudent(ct, nSamples = nrow(Xw))
+
+heatmap(ct, Rowv=NA, Colv=NA, scale="none")
+```
+
+**解釈**：ME–表現型の相関が高いモジュール＝処理応答の候補。モジュール内の **kME（モジュールメンバーシップ）** が高い遺伝子は**ハブ**候補。
+
+```r
+# モジュールのハブ候補（例：最もdexと相関が高いモジュール）
+mod_id <- which.max(abs(cor(ME, trait[,"trt"])) )
+mod_label <- names(ME)[mod_id]
+sel_genes <- names(modules)[modules == net$colors[net$colors == mod_id][1]]
+
+kME <- signedKME(Xw, ME)
+hub <- tibble::tibble(gene = rownames(kME), kME = kME[, mod_id]) |>
+  dplyr::filter(gene %in% sel_genes) |>
+  dplyr::arrange(dplyr::desc(kME)) |>
+  head(20)
+```
+
+**よくある落とし穴**
+
+* サンプル数不足（目安：>15–20）。
+* 外れ値サンプルで樹形図が歪む → `goodSamplesGenes` / PCA でQC。
+* scale-free 適合に固執しすぎない。
+* バッチ・共変量は**事前に回帰**（`limma::removeBatchEffect` など）で取り除く。
+
+---
+
+## D. 知識グラフ（STRING / HumanBase）による補強
+
+**目的**：データ駆動で得たモジュールが**既知の生物学的連関**で支えられているか検証し、関連経路を可視化。
+
+### D1. STRING（PPI）を取得してモジュールに重ねる
+
+```r
+# gene symbol → STRING ID へマッピング（9606: human）
+string_db <- STRINGdb$new(version = "12", species = 9606, score_threshold = 700, input_directory = tempdir())
+map <- string_db$map(tibble::tibble(gene=rownames(X)), "gene", removeUnmappedRows = TRUE)
+
+# 高信頼エッジ
+hits <- string_db$get_interactions(map$STRING_id)
+ppi  <- dplyr::filter(hits, combined_score >= 700)
+
+# モジュール内の PPI サブグラフ
+mod_genes <- hub$gene # ここではハブ上位を例示（適宜: sel_genes 全体へ）
+ids <- map$STRING_id[match(mod_genes, map$gene)]
+sub <- dplyr::filter(ppi, protein1 %in% ids & protein2 %in% ids)
+
+# 可視化のため STRING_id → gene symbol へ戻す
+revmap <- setNames(map$gene, map$STRING_id)
+Eppi <- tibble::tibble(
+  from = revmap[sub$protein1],
+  to   = revmap[sub$protein2]
+) |>
+  dplyr::filter(!is.na(from) & !is.na(to))
+Gppi <- igraph::graph_from_data_frame(Eppi, directed = FALSE)
+
+# 重ね描画（モジュール内のPPI）
+plot(Gppi, vertex.size = 5, vertex.label=NA)
+```
+
+**評価**：モジュール内エッジ数がランダムより多いか？→**過剰連結度（hypergeometric）**。
+
+```r
+# 簡易な過剰連結度検定（背景: map$STRING_id 全体）
+B  <- nrow(ppi)                                   # 背景エッジ総数
+V  <- length(unique(c(ppi$protein1, ppi$protein2))) # 背景ノード数
+k  <- igraph::ecount(Gppi)                        # 観測エッジ
+m  <- choose(length(ids), 2)                      # 期待可能エッジ数（完全グラフ）
+# ここでは簡便な置換ベースのp近似（実運用ではネットワークランダム化を推奨）
+```
+
+### D2. HumanBase（組織特異的ネットワーク）
+
+* 例：脳・肝など組織特異ネットワークでモジュールの**組織適合性**を検証。
+* 実装メモ：HumanBase のエッジ表（TSV）をダウンロード → `readr::read_tsv()` → `igraph` で読み込み → D1 と同様に重ね合わせ。
+
+---
+
+## E. 統合ワークフロー（推奨の手順）
+
+1. **前処理**：正規化（logCPM / VST）、共変量回帰、外れ値 QC。
+2. **相関のロバスト化**：`bicor` / `cor.shrink`。
+3. **部分相関（任意）**：EBICglasso で直接依存を抽出。
+4. **WGCNA**：モジュール検出→ME–表現型相関→ハブ抽出。
+5. **知識グラフ重ね合わせ**：STRING/HumanBase サブグラフ、過剰連結度、機能注釈。
+6. **仮説化**：ハブ遺伝子群の PPI/経路、薬剤応答・組織適合性を記述。
+7. **再現性**：ブートストラップ/別データでモジュール保持（`modulePreservation`）。
+
+---
+
+## F. レポート用出力（Cytoscape / 画像 / 表）
+
+```r
+# Cytoscape へ（WGCNA）
+# TOM を書き出すと重いので、モジュール上位ハブの小規模サブネットを推奨
+sel <- hub$gene
+subX <- X[sel, ]
+cor_sub <- WGCNA::bicor(t(subX))
+qgraph::qgraph(cor_sub, layout = "spring", minimum = 0.5, cut = 0.5, details = TRUE)
+
+# CSVエッジリストの出力
+ed <- which(abs(cor_sub) > 0.5 & upper.tri(cor_sub), arr.ind=TRUE)
+write.csv(tibble::tibble(
+  from = rownames(cor_sub)[ed[,1]],
+  to   = colnames(cor_sub)[ed[,2]],
+  weight = cor_sub[ed]
+), file = "edges_for_cytoscape.csv", row.names = FALSE)
+```
+
+## I. 予測と特徴量化（ME・中心性）
+
+**目的**：WGCNAのモジュール固有量（ME）やネットワーク中心性から**サンプルレベルの特徴量**を作り、表現型（ここでは dex 処理）を予測するミニ演習。
+
+> 注意：airway は n=8 と小標本。ここでは**実装デモ**として LOOCV を用いる（本番は外部検証/別コホートで評価）。
+
+```r
+# 必要pkg
+for(p in c("glmnet","pROC")) if(!requireNamespace(p, quietly=TRUE)) install.packages(p)
+library(glmnet); library(pROC)
+
+# 既存オブジェクトの確認（なければ最低限を再生成）
+if(!exists("Xw") || !exists("modules") || !exists("ME")){
+  Xw <- t(X)  # samples x genes
+  if(!exists("power")) power <- 6
+  net <- blockwiseModules(
+    Xw, power = power, networkType = "signed", TOMType = "signed",
+    minModuleSize = 30, mergeCutHeight = 0.25, numericLabels = TRUE
+  )
+  modules <- net$colors
+  ME <- moduleEigengenes(Xw, colors = modules)$eigengenes
+}
+
+# (1) ME を特徴量に
+Y <- factor(coldata$dex, levels=c("untrt","trt"))
+X_me <- as.matrix(ME) # n_samples x n_modules
+set.seed(42)
+cv_me <- cv.glmnet(scale(X_me), Y, family="binomial", alpha=1, nfolds=nrow(X_me))
+prob_me <- as.numeric(predict(cv_me, newx=scale(X_me), s="lambda.min", type="response"))
+auc_me <- pROC::auc(Y, prob_me)
+cat(sprintf("MEのみのLOOCV AUC = %.3f
+", as.numeric(auc_me)))
+
+# (2) 中心性を用いたモジュール活動スコア（中心性加重平均）
+# モジュール選定：dexと最も相関するモジュール
+trait <- model.matrix(~ 0 + coldata$dex); colnames(trait) <- levels(coldata$dex)
+mod_id <- which.max(abs(cor(ME, trait[,"trt"])) )
+sel_genes <- names(modules)[modules == mod_id]
+
+# そのモジュール内エッジ（相関ベース）
+subX <- t(Xw[, sel_genes, drop=FALSE])  # genes x samples
+rb_sub <- WGCNA::bicor(t(subX))
+adj_sub <- rb_sub
+adj_sub[lower.tri(adj_sub, diag=TRUE)] <- 0
+ed <- which(abs(adj_sub) > 0.5, arr.ind=TRUE)
+G_sub <- igraph::graph_from_data_frame(
+  data.frame(from=rownames(adj_sub)[ed[,1]], to=colnames(adj_sub)[ed[,2]], w=rb_sub[ed]),
+  directed=FALSE
+)
+# 中心性（固有ベクトル中心性）
+cen <- igraph::eigen_centrality(G_sub, weights=E(G_sub)$w)$vector
+cen <- cen[sel_genes]; cen[is.na(cen)] <- 0
+
+# サンプルごとの中心性加重スコア
+Z_mod <- scale(t(Xw[, sel_genes, drop=FALSE]))  # 遺伝子×サンプルを標準化
+wscore <- colSums((matrix(cen, nrow=length(cen), ncol=ncol(Z_mod)) * Z_mod), na.rm=TRUE) / sum(cen)
+
+# (3) ME + 中心性スコアで学習
+X_feat <- cbind(ME, cenScore = wscore)
+cv_feat <- cv.glmnet(scale(as.matrix(X_feat)), Y, family="binomial", alpha=1, nfolds=nrow(X_feat))
+prob_feat <- as.numeric(predict(cv_feat, newx=scale(as.matrix(X_feat)), s="lambda.min", type="response"))
+auc_feat <- pROC::auc(Y, prob_feat)
+cat(sprintf("ME+中心性スコアのLOOCV AUC = %.3f
+", as.numeric(auc_feat)))
+
+# 係数の可視化（非ゼロのみ）
+coefs <- as.matrix(coef(cv_feat, s="lambda.min"))
+nonzero <- data.frame(term=rownames(coefs)[coefs[,1]!=0], weight=coefs[coefs[,1]!=0,1])
+nonzero <- nonzero[order(-abs(nonzero$weight)),]
+print(nonzero)
+```
+
+**演習（I）**
+
+1. 閾値や中心性の種類（次数/媒介/固有）を変えて AUC の変化を比較。
+2. ME を PCA に置き換え（上位PC）て性能比較。
+3. シャッフル検定（ラベルをランダム化）で帰無分布を作り、有意性を確認。
+
+---
+
+## J. ネットワーク近接で薬剤候補／疾患モジュール仮説
+
+**目的**：疾患モジュール（例：dex 応答モジュール）と薬剤標的集合の**ネットワーク距離**を計算し、ランダム化で \$Z\$ と \$p\$ を付与して**近接性**を評価する。
+
+```r
+# 1) 背景PPIの構築（STRING 高信頼）
+if(!exists("string_db")) string_db <- STRINGdb$new(version = "12", species = 9606, score_threshold = 700, input_directory = tempdir())
+
+# 例: 薬剤標的（デモ）— グルココルチコイド関連の代表遺伝子
+DrugSet <- c("NR3C1","FKBP5","TSC22D3","KLF15","SGK1")
+
+bg_genes <- unique(c(rownames(dge), DrugSet))
+map_bg <- string_db$map(tibble::tibble(gene = bg_genes), "gene", removeUnmappedRows = TRUE)
+ppi_bg  <- string_db$get_interactions(map_bg$STRING_id) |>
+  dplyr::filter(combined_score >= 700)
+revmap_bg <- setNames(map_bg$gene, map_bg$STRING_id)
+Ebg <- tibble::tibble(from = revmap_bg[ppi_bg$protein1], to = revmap_bg[ppi_bg$protein2]) |>
+  dplyr::filter(!is.na(from) & !is.na(to))
+Gbg <- igraph::graph_from_data_frame(Ebg, directed = FALSE)
+Gbg <- igraph::simplify(Gbg)
+
+# 2) 疾患モジュールA（dexと最も相関したWGCNAモジュール）と薬剤標的B を定義
+A <- intersect(sel_genes, igraph::V(Gbg)$name)
+B <- intersect(DrugSet, igraph::V(Gbg)$name)
+
+# 3) 距離関数（closest法）とZスコア
+closest_mean <- function(G, A, B){
+  if(length(A)==0 || length(B)==0) return(Inf)
+  D <- igraph::distances(G, v=A, to=B)
+  D[is.infinite(D)] <- max(D[is.finite(D)], na.rm=TRUE) + 1
+  mean(apply(D, 1, min))
+}
+
+# 度分布に合わせたランダム化（ビンマッチ）
+degree_bins <- function(G, nbins=7){
+  d <- igraph::degree(G)
+  qs <- unique(quantile(d, probs=seq(0,1,length.out=nbins+1)))
+  cut(d, breaks=qs, include.lowest=TRUE, labels=FALSE)
+}
+
+sample_matched <- function(G, S, bins, replace=FALSE){
+  b <- bins[S]; U <- names(bins)
+  out <- character(0)
+  for(k in sort(unique(b))){
+    pool <- U[bins==k]
+    nk <- sum(b==k)
+    out <- c(out, sample(pool, nk, replace=replace))
+  }
+  out
+}
+
+proximity_test <- function(G, A, B, nperm=500){
+  bins <- degree_bins(G)
+  d_obs <- closest_mean(G, A, B)
+  rand <- numeric(nperm)
+  for(i in seq_len(nperm)){
+    Ar <- sample_matched(G, A, bins)
+    Br <- sample_matched(G, B, bins)
+    rand[i] <- closest_mean(G, Ar, Br)
+  }
+  z <- (d_obs - mean(rand))/sd(rand)
+  p <- mean(rand <= d_obs) # 片側（近い方向）
+  list(d_obs=d_obs, z=z, p=p, null=rand)
+}
+
+set.seed(42)
+res <- proximity_test(Gbg, A, B, nperm=500)
+print(res[c("d_obs","z","p")])
+```
+
+**解釈**：\$Z<0\$ かつ \$p\$ 小 → **近接**（薬剤標的が疾患モジュールの近傍）。
+**注意**：背景グラフのサイズ・連結性・スコア閾値に結果が依存。現実の解析では**広い背景**と**厳密な度保存ランダム化**（switching法）を推奨。
+
+**演習（J）**
+
+1. `combined_score` の閾値（600/700/900）を変えて \$Z\$ を比較。
+2. 近接の定義を `average of all pairs` に変更して再計算。
+3. 別モジュールを A に、別薬剤標的集合（自作リスト）を B にして感度を確認。
+
+---
+
+## G. 演習課題
+
+1. **ナイーブ vs ロバスト相関**
+
+   * (i) Pearson 閾値ネットワーク（|r|>0.7）を作る。
+   * (ii) `bicor+FDR` に置き換え、ノード次数分布とクラスター係数を比較。
+
+2. **部分相関**
+
+   * EBICglasso でネットワークを推定し、A のネットワークと**共通エッジ率**と**Jaccard係数**を計算して解釈。
+
+3. **WGCNA**
+
+   * モジュール–dex 相関上位のモジュールを特定。
+   * そのモジュールのハブ上位20を列挙し、`GO/MsigDB` で富化語を簡易に確認（任意）。
+
+4. **知識グラフ重ね合わせ**
+
+   * ハブ遺伝子群の STRING サブグラフを可視化。
+   * 過剰連結度の有無をコメント（仮説形成）。
+
+5. **発展（任意）**
+
+   * ブートストラップでエッジ選択の安定性を評価。
+   * `modulePreservation` で別データへの再現性を検証。
+   * シングルセル：クラスタごと平均発現→WGCNA（または `hdWGCNA`）。
+
+---
+
+## H. よくある質問（FAQ）
+
+* **相関 vs 部分相関**：部分相関は第三変数を条件付きで除去し、**直接**関係に近い。因果ではない。
+* **WGCNA の scale-free 仮定**：厳密な検定ではなく、重み付けの指針。過度に固執しない。
+* **合成制約（compositional）**：TPM 等の相対量では偽相関が生じやすい。logCPM/VST やサイズ因子回帰を推奨。
+* **小標本**：縮小推定（shrinkage）や EBIC を強める（`gamma`↑）。
+
+---
+
+## 付録：ユーティリティ関数
+
+```r
+# ネットワーク記述統計
+net_stats <- function(G){
+  tibble::tibble(
+    n = igraph::vcount(G), m = igraph::ecount(G),
+    avg_deg = mean(igraph::degree(G)),
+    trans   = igraph::transitivity(G, type = "global"),
+    assort  = igraph::assortativity.degree(G)
+  )
+}
+
+# Jaccard 類似度（同一ノード集合を仮定）
+edgelist <- function(G){t(apply(as.matrix(igraph::as_edgelist(G)),1,sort)) |> as.data.frame()}
+edge_jaccard <- function(G1,G2){
+  e1 <- edgelist(G1) |> dplyr::mutate(e=paste(V1,V2,sep="__"))
+  e2 <- edgelist(G2) |> dplyr::mutate(e=paste(V1,V2,sep="__"))
+  inter <- length(intersect(e1$e, e2$e)); uni <- length(union(e1$e, e2$e))
+  inter/uni
+}
+```
+
+---
+
+### 参考の読み方（概念）
+
+* **データ駆動**は仮説発見、**知識グラフ**は仮説の拘束・説明。両者を往復して**頑健性**を高める。
+* ネットワークは「**似ている**（相関）」「**直接つながる**（部分相関）」「**生物学的に結びつく**（PPI）」の三層の視点で読み解く。

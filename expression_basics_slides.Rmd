@@ -194,7 +194,7 @@ $$
 \operatorname{Var}(Y)=\mu+\alpha\mu^2
 $$
 
-のように平均に依存して分散が増加する（過分散）。**この異質分散を無視した検定**は型I誤りの制御に失敗しうる。\*\*voom（重み付け）\*\*や **NB-GLM** により平均–分散関係を明示的に扱う。
+のように平均に依存して分散が増加する（過分散）。**この異質分散を無視した検定**は第一種の過誤の制御に失敗しうる。*voom（重み付け）*や **NB-GLM** により平均–分散関係を明示的に扱う。
 
 **具体例**：NB過程から生成し、平均–分散関係を可視化
 
@@ -276,7 +276,7 @@ g2 <- ggplot(tibble(p=p_voom), aes(p)) +
 
 * 真の群差が無いにもかかわらず、**生カウント＋等分散 *t*** は *p* 値が0近傍に過剰集中し、**偽陽性が期待値を大きく超過**。  
 * **TMM→voom→eBayes** では *p* 値分布が**概ね一様**、**偽陽性数は期待値に近い**。  
-* **合成制約に起因するスケーリング差**は、**正規化と平均–分散モデリング**を行わないと**型I誤りが制御不能**になる。
+* **合成制約に起因するスケーリング差**は、**正規化と平均–分散モデリング**を行わないと**第一種の過誤が制御不能**になる。
 
 
 **小結**：**平均依存の分散**を**重み付け/モデル化**しないと、偽陽性が膨らむ。**voom や NB-GLM**で回避する。
@@ -364,7 +364,7 @@ sum(p.adjust(fit_withbatch$p.value[, "group2B"], "BH") < 0.05)  # ← 大幅に�
 | - | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1 | **多重検定**               | 遺伝子/ピーク/転写産物など**数万〜十万**特徴を同時検定 → **BH（FDR）必須**。**独立フィルタ**（baseMean 等）で検出不能領域を除外。*複数コントラスト*は family 全体でFDR。                                 | ペプチド/フィーチャ/メタボライトで**数万単位**の検定。ID 段階の FDR（PSM/peptide）とは**別に**定量段階でも FDR 管理が必要。ペプチド→タンパク質の**多重性**（ファミリー）も考慮。                                |
 | 2 | **分散推定の不安定性（small-n）** | 典型は **n=3**/群。遺伝子ごとの残差分散 $s_g^2$ が揺れ、t が過大/過小化。**empirical Bayes**（limma eBayes, DESeq2/edgeR の分散縮約）と **voom**/NB-GLM で**安定化**。            | LFQ 強度は**異質分散＋欠測**で分散推定が不安定。**limma+eBayes** や **MSqRob2**, **proDA**（MNAR/ドロップアウトをモデル化）で**分散縮約＆ロバスト化**。TMT でもチャネル間ばらつきに対して EB が有効。        |
-| 3 | **平均–分散依存**            | カウントは **NB**：$\mathrm{Var}=\mu+\alpha\mu^2$。**voom**（平均–分散に基づく重み）や **NB-GLM（DESeq2/edgeR）**で**型I誤りの膨張**を防ぐ。                                | 強度は**強度依存の分散**（低強度で相対誤差↑）。**対数変換**＋**limma-trend/precision weights**で補正。**TMT比圧縮**は高強度側の効果量縮小として現れ、**MSstatsTMT**等で推定補正。                   |
+| 3 | **平均–分散依存**            | カウントは **NB**：$\mathrm{Var}=\mu+\alpha\mu^2$。**voom**（平均–分散に基づく重み）や **NB-GLM（DESeq2/edgeR）**で**第一種の過誤の膨張**を防ぐ。                                | 強度は**強度依存の分散**（低強度で相対誤差↑）。**対数変換**＋**limma-trend/precision weights**で補正。**TMT比圧縮**は高強度側の効果量縮小として現れ、**MSstatsTMT**等で推定補正。                   |
 | 4 | **合成制約・正規化の影響**        | リード総数・組成差で**見かけの差**（p値左裾過多）。**TMM/RLE/upper-quartile**等で**ライブラリサイズ/組成補正**。16S など強い合成性では **CLR/ANCOM-BC/ALDEx2**。**GC/長さ**は **cqn/EDASeq**。 | **TIC/インジェクション量/イオン化効率**差、ラン間ドリフトで見かけの差。**グローバル正規化**（median, quantile）、**QCベースLOESS**、**参照チャネル（TMT）**や**ノーマライザ**で補正。ラベル無しは**バッチ間補正＋QC**が要。 |
 | 5 | **交絡・バッチ**             | **フローセル/レーン/ライブラリ調製日**等が群と一致 → **完全交絡は推定不能**。**デザインに batch**, **交互作用**, **SVA/RUV**。ランダム化・バランス設計が最重要。                                      | **LCラン順/カラム劣化/ラベルセット（TMT set）/機器メンテ**など。**runOrder**や**set**を共変量に、**bridge/参照チャネル**で跨ぎ補正。**removeBatchEffect**は説明済み変動の除去に限定し、**設計でまず調整**。  |
 
@@ -466,7 +466,7 @@ sum(p.adjust(fit_withbatch$p.value[, "group2B"], "BH") < 0.05)  # ← 大幅に�
 
 ## 0) セットアップ（一度だけ）
 
-```{r}
+```{r,message=FALSE}
 # ---- setup ----
 set.seed(123)
 needs <- c("edgeR","limma","IHW","ggplot2","dplyr","tibble","pheatmap")
@@ -484,205 +484,300 @@ suppressPackageStartupMessages({
 })
 ```
 
+
 # A. カウント系（RNA-seq 等）ルート
 
-## A1. 設計とデータの最小準備
+## 設計とデータの最小準備（シミュレーション）
 
-**概念**：群効果にバッチやペアリングを**同時**に入れ、完全交絡を避ける。
-**スキル**：`model.matrix(~ batch + group)`、因子の基準設定。
-**関数**：`DGEList`, `model.matrix`
+**目的**：群（A/B）とバッチ（b1/b2）の**因子を定義**し、**完全交絡を避けた配置**でデータを**シミュレーション**する（※デザイン行列の作成は次ステップ）。
+
+**コード**：NB乱数生成、因子の定義、再現性（`set.seed`）。
+
+**関数**：`rgamma`, `rnbinom`, `replicate`（解析関数は**A2以降**で使用）
 
 ```{r}
-# ---- A1_simulate_counts ----
-# 小規模NBデータ：group A/B、batch 2水準
 # ---- A1_simulate_counts (safe) ----
 set.seed(1)
+library(edgeR); library(limma)
 
 p <- 6000; nA <- 3; nB <- 3
 group <- factor(c(rep("A", nA), rep("B", nB)))
 batch <- factor(c("b1","b2","b1","b2","b1","b2"))
 
-# 遺伝子ごとの基準平均と過分散（NB）
-mu_g <- rgamma(p, shape = 2, rate = 0.2)  # 平均
-disp <- 0.08                               # ディスパージョン（1/size）
-size <- 1/disp
+# 負の二項：遺伝子ごとの平均と分散
+mu_g <- rgamma(p, shape=2, rate=0.2)
+size <- 1/0.08  # dispersion=0.08
 
-# 真の差：300遺伝子に「符号付き logFC」を与える（←負のFCもOK）
+# 真の差（300遺伝子）：符号付き logFC を exp で FC に
 de_idx <- sample.int(p, 300)
-logfc  <- rnorm(300, mean = log(1.6), sd = 0.2) * sample(c(-1, 1), 300, TRUE)
-fc_vec <- rep(1, p); fc_vec[de_idx] <- exp(logfc)  # exp(±log1.6) -> 1.6 or 1/1.6
+logfc  <- rnorm(300, mean=log(1.6), sd=0.2) * sample(c(-1,1), 300, TRUE)
+fc_vec <- rep(1, p); fc_vec[de_idx] <- exp(logfc)
 
-# グループ別に列を生成（replicate で p×列数の行列に）
-make_counts_group <- function(isB = FALSE, n_rep) {
+# A, B のカウント生成（列=サンプル）
+gen <- function(isB, n) {
   mu <- mu_g * if (isB) fc_vec else 1
-  replicate(n_rep, rnbinom(p, mu = mu, size = size))
+  replicate(n, rnbinom(p, mu=mu, size=size))
 }
-
-XA <- make_counts_group(FALSE, nA)  # A 群 3列
-XB <- make_counts_group(TRUE,  nB)  # B 群 3列
-X  <- cbind(XA, XB)
-colnames(X) <- c(paste0("A", seq_len(nA)), paste0("B", seq_len(nB)))
+X <- cbind(gen(FALSE, nA), gen(TRUE, nB))
+colnames(X) <- c(paste0("A", 1:nA), paste0("B", 1:nB))
 ```
 
-**ポイント**：設計式は**最初に固定**。以降の正規化・重み付け・検定は、**この設計に整合**させる。
+**ポイント**：この段階では**因子の用意とデータ生成のみ**。**デザイン行列はA2で作成**し、以降の正規化・検定はその設計に**一貫**させる。
+
 
 ## A2. 合成制約への対応：正規化（TMM/RLE）
 
-**概念**：総リード数・組成差（合成データ）の影響を除去しないと、**“見かけの差”→偽陽性**。
-**スキル**：`calcNormFactors`（TMM）。
-**関数**：`calcNormFactors`, `cpm`
+**概念**：総リード数・組成差（合成データ）の影響を除去しないと**見かけの差で偽陽性**が増える。
+
+**スキル**：`DGEList`の作成、`calcNormFactors(TMM)`、`model.matrix(~ batch + group)`。
+
+**関数**：`DGEList`, `calcNormFactors`, `model.matrix`, `cpm`, `plotMDS`
 
 ```{r}
 # ---- A2_normalize_TMM ----
-y <- calcNormFactors(X, method = "TMM")
-# 可視化例：正規化後のMDS
-plotMDS(X, col = as.integer(group), main = "MDS after TMM")
+y <- DGEList(counts = X, group = group)
+y$samples$batch <- batch
+y <- calcNormFactors(y, method = "TMM")
+
+# 設計（必ず y$samples から作る）
+design <- model.matrix(~ batch + group, data = y$samples)
+
+# 例：MDS（任意）
+plotMDS(cpm(y, log=TRUE), col=as.integer(y$samples$group),
+        main="MDS after TMM")
 ```
+
+
+### 解説（行ごとに）
+
+#### `y <- DGEList(counts = X, group = group)`
+
+* **何を**：edgeR の解析用コンテナを作成（カウント行列 + サンプル情報）。
+
+* **なぜ**：以降の正規化・NB モデリングで必要なメタ情報（ライブラリサイズ、群ラベルなど）を一元管理するため。
+
+* **方法（原理）**：サンプル $i$ のライブラリサイズ $N_i=\sum_g K_{gi}$ を保持し、以降は*オフセット（対数スケール）*としてモデルに入る（NB-GLM で $\log \mu_{gi}=\log s_i+X\beta$ の $\log s_i$ 部分）。
+
+* **注意**：`group` は**因子**で。列順（Xの列名）と一致していることを前段で確認しておくと安全。
+
+#### `y$samples$batch <- batch`
+
+* **何を**：バッチ因子をサンプル表に追加。
+
+* **なぜ**：**設計行列**を `y$samples` から確実に構築するため（グローバル変数の取り違え防止）。
+
+* **注意**：`group` と `batch` は**両水準が各群に存在**（完全交絡を避ける）していることを `table(batch, group)` で確認可能。
+
+#### `y <- calcNormFactors(y, method = "TMM")`
+
+* **何を**：**TMM 正規化**でライブラリサイズ/組成差を補正し、`y$samples$norm.factors` を推定。以降の `cpm/voom/edgeR` で**正規化済みライブラリサイズ**が使われる。
+
+* **なぜ**：合成データ（各サンプル総量が一定ではない）では、総カウントや組成の違いだけで**見かけの差**が大量に出るため。
+
+* **方法（原理・概要）**：
+
+  * 代表サンプル（またはペア）間で遺伝子ごとに
+
+    $$
+    M_g=\log_2\frac{K_{g1}/N_1}{K_{g2}/N_2},\quad 
+    A_g=\tfrac12\log_2\left(\frac{K_{g1}}{N_1}\cdot\frac{K_{g2}}{N_2}\right)
+    $$
+
+    を計算。
+    
+  * **M と A の両端（外れ・強変動遺伝子）をトリミング**し、残りの $M_g$ の**重み付き平均**をとって**スケール因子**を推定。
+  
+  * 前提は「**大多数の遺伝子は不変**」。外れ・極端な変動を trimming で抑える**ロバスト**な比正規化。
+
+* **注意**：全体の組成が極端に異なる（例：片群でリボソーム枯渇失敗）場合、TMM が不安定になり得る。その際は**参照選択**の工夫や RLE を検討。
+
+#### `design <- model.matrix(~ batch + group, data = y$samples)`
+
+* **何を**：**設計行列**を作る（列＝切片＋バッチ効果＋群効果）。
+
+* **なぜ**：**群効果とバッチ効果を同時にモデリング**して、交絡を抑えつつ群差を推定するため。
+
+* **方法（原理）**：線形モデルの $X$ を作成。後続の voom/limma では
+
+  $$
+  y_g = X\beta_g + \varepsilon_g,\ \ \varepsilon_g\sim N(0,\sigma_g^2 W^{-1})
+  $$
+
+  の形で推定し、オフセットに TMM 正規化ライブラリが入る。
+* **注意**：`data = y$samples` を**必ず指定**（グローバルの別 `batch/group` を拾わない）。基準水準（relevel）は必要に応じて設定。
+
+#### `plotMDS(cpm(y, log=TRUE), ...)`
+
+* **何を**：**MDS**（多次元尺度法）でサンプルの関係を可視化。入力は `cpm(y, log=TRUE)`（**logCPM**）。
+
+* **なぜ**：正規化の後、**群で分かれ、バッチで分かれすぎない**かを視覚的に点検（外れサンプルの検出にも有用）。
+
+* **方法（原理）**：
+
+  * `cpm(y, log=TRUE)` は **Counts-per-Million** を対数化（**既に推定済み TMM 因子でスケーリング**）。デフォルトの **`prior.count` により 0 回避**（ゼロの $\log$ 発散を防ぐスムージング）。
+ 
+  * `plotMDS` は**leading logFC 距離**（分散が大きい遺伝子を優先）でサンプル間距離を計算し、**低次元へ埋め込み**。
+* **注意**：MDS は**監督なし**の可視化。最終判断は設計に基づくモデル結果で行うこと。極端な外れがあれば、原因（QC/バッチ/注入量など）を先に洗う。
+
+**補足**
+
+* **TMM vs RLE**：RNA-seq では TMM（edgeR）も RLE（DESeq2）も広く使われる。*目的は同じ（組成差の補正）*で、両者を大きく矛盾させる必要はない。
+
+* **`cpm(..., log=TRUE)` の prior.count**：デフォルトで小さな擬似カウントを加えるため、低カウント遺伝子の logCPM が**過度に −∞ へ行かない**。
+
+* **設計の rank**：`qr(design)$rank == ncol(design)` を見て**完全交絡が無い**ことを確認できる。
+
 
 ## A3. 平均–分散依存：voom 重み → 線形モデル
 
-**概念**：NBの平均–分散関係を**voom重み**で近似、limmaの線形モデルへ。
-**スキル**：`voom` → `lmFit` → `eBayes`。
+**概念**：NBの平均–分散関係を**voom重み**に写像し、limmaの線形モデルで推定・検定。
+**スキル**：`voom`→`lmFit`→`eBayes`→`topTable`。
 **関数**：`voom`, `lmFit`, `eBayes`, `topTable`
 
-```r
+```{r}
 # ---- A3_voom_fit ----
-v <- voom(y, design, plot = FALSE)
+v   <- voom(y, design, plot = FALSE)
 fit <- lmFit(v, design)
-fit <- eBayes(fit, robust = TRUE)  # small-n対策でrobust EBを推奨
-tt  <- topTable(fit, coef = "groupB", number = Inf, sort.by = "P")
+fit <- eBayes(fit, robust = TRUE)
+
+# 係数名は環境差を避けて安全に取得
+coef_name <- grep("^group", colnames(fit$coefficients), value = TRUE)
+tt <- topTable(fit, coef = coef_name, number = Inf, sort.by = "P")
 head(tt)
 ```
 
 
-## A4. 分散推定の不安定性：Empirical Bayes 縮約
+### 解説（行ごとに）
 
-**概念**：small-n で gene-wise 分散が揺れる → **EBが裾を詰めて** t を安定化。
-**スキル**：`eBayes(robust=TRUE)`の利用・効果の解釈（p値ヒスト、MA）。
-**関数**：`eBayes`, `plotMD`
+#### `v <- voom(y, design, plot = FALSE)`
 
-```r
+* **何を**：カウント（`y`）を **logCPM** に変換し、**観測ごとの精度重み（weights）** を推定して返す（`v$E` と `v$weights`）。
+* **なぜ**：カウントは **平均が大きいほど分散も大きい**（平均–分散依存）。そのまま t 検定やOLSを当てると**第一種の過誤が膨張**。**重み付き線形モデル**に落として正しく比較するため。
+* **方法（原理）**：
+
+  1. `cpm` を対数化（TMMサイズ因子をオフセットに反映）。
+  2. `design` に基づく一次フィット → 残差から **平均–分散トレンド**を LOESS で推定。
+  3. 各観測の**分散の逆数 ≒ 精度重み**を算出（小さい平均には小さい重み）。
+* **注意**：`voom` 前に **TMM 等の正規化**が済んでいること（A2）。本来は `edgeR::filterByExpr` で**低カウント前フィルタ**を入れると安定（教材では簡略化）。
+
+#### `fit <- lmFit(v, design)`
+
+* **何を**：`voom` の **重み付き**で **遺伝子ごとに線形モデル**を推定（WLS）。
+* **なぜ**：群効果とバッチ効果を**同時**に推定するため（交絡回避）。
+* **方法（原理）**：各遺伝子 $g$ について
+
+  $$
+  \hat\beta_g=(X^\top W_g X)^{-1}X^\top W_g y_g
+  $$
+
+  を解く（$W_g$：voomの精度重み）。
+* **注意**：`design` の *階数（rank）*が満たされていること（完全交絡がない）。列名＝係数名になるので後続で利用。
+
+#### `fit <- eBayes(fit, robust = TRUE)`
+
+* **何を**：*Empirical Bayes（EB）*で **gene-wise 分散**を縮約し、**モデレート t** を計算（`robust=TRUE` で外れに頑健）。
+* **なぜ**：small-n では分散推定が不安定 → **裾を詰めて** t の分母を安定化、**偽陽性と偽陰性を同時に抑える**。
+
+* **方法（原理）**：
+
+  $$
+  s^2_{\text{post}}=\frac{\nu_0 s_0^2+\nu_g s_g^2}{\nu_0+\nu_g},\quad
+  t_g^{\text{mod}}=\frac{c^\top\hat\beta_g}{\sqrt{s^2_{\text{post}}\,v_g}}
+  $$
+
+  `robust=TRUE` は分散推定の **ウィンズライゼーション**で外れの影響を減らす。
+* **注意**：ここで “縮約を**適用**”。効果の可視化は A4 で実施。
+
+* ウィンズライゼーション（Winsorization）とは、統計的な外れ値の処理方法の一つで、データの極端に大きい（または小さい）値を、あるパーセンタイル（しきい値）に置き換えてしまう手法のこと。limma の robust EB は分散推定にこれを使って、外れた遺伝子の分散が全体をゆがめないようにしている。
+
+#### `coef_name <- grep("^group", colnames(fit$coefficients), value = TRUE)`
+
+* **何を**：**群効果の係数名**を自動検出（例：`"groupB"`）。
+* **なぜ**：環境により列名が微妙に異なるため、**正規表現で安全に取得**する。
+* **注意**：交互作用を入れた場合は `^group` が**意図しない列**を拾うことがある。必要に応じて**厳密一致**（`which(colnames(design)=="groupB")`→同名を `fit` に反映）に変更。
+
+#### `tt <- topTable(fit, coef = coef_name, number = Inf, sort.by = "P")`
+
+* **何を**：指定係数（群効果）の **統計表**（効果量、標準誤差、t、p など）を作成。
+* **なぜ**：遺伝子ごとの結果を**p値昇順**で一覧化し、以降の FDR、効果量閾値、注釈に渡すため。
+* **方法（原理）**：`eBayes` のモデレート t / p を使って表を構成。`number=Inf` は全遺伝子を返す指定。
+* **注意**：`topTable` の `adj.P.Val` は **デフォルトでBH**（limma内部）だが、教材では A5 で **明示的に `p.adjust`** を行い、手順を可視化するのが分かりやすい。
+
+#### `head(tt)`
+
+* **何を**：上位数行のプレビュー（品質確認）。
+* **なぜ**：パイプラインが**期待通りに通っているか**をすぐ点検できる（係数名の解決ミスなどを早期発見）。
+
+**補足（よくあるつまずき）**
+
+* `voom` で「dimension mismatch」：`design` の行数は **サンプル数**と一致しているか（`nrow(design)==ncol(y$counts)`）。
+* 係数名の取り違え：`colnames(design)` と `colnames(fit$coefficients)` を**必ず確認**。
+* 低カウントが多いとき：`edgeR::filterByExpr(y, design)` で事前フィルタ → `y <- y[keep,]` → `voom(...)` に進むと安定。
+
+
+## A4. 診断：Empirical Bayes 縮約の効果
+
+**概念**：small-n で gene-wise 分散が揺れるため、**EB**が分散の裾を詰め**t統計の安定化**に寄与するかを診る。
+**スキル**：p値ヒスト、`decideTests`＋`plotMD`。
+**関数**：`decideTests`, `plotMD`
+
+```{r}
 # ---- A4_diag_shrink ----
-ggplot(tibble(p=tt$P.Value), aes(p)) + geom_histogram(bins=40, boundary=0) +
-  ggtitle("p値ヒスト（voom+robust EB）")
+# p値ヒスト（簡潔に base R で）
+hist(tt$P.Value, breaks = 40, xlab = "p-value",
+     main = "p値ヒスト（voom + robust eBayes）")
 
-plotMD(fit, column = "groupB", status = tt$adj.P.Val < 0.05,
-       main="MD/MA plot (signif=BH<0.05)")
+# 有意遺伝子：decideTests（fitと同じ行順で安全）
+coef_name  <- grep("^group", colnames(fit$coefficients), value = TRUE)
+coef_index <- match(coef_name, colnames(fit$coefficients))
+dt <- decideTests(fit, adjust.method = "BH", p.value = 0.05)
+
+plotMD(fit, column = coef_index, status = dt[, coef_index],
+       main = "MD/MA plot（BH<0.05 をハイライト）")
 ```
 
 
-## A5. 多重検定：BH/IHW
+## A5. 多重検定：BH / IHW
 
-**概念**：検定数が巨大 → **FDR制御**必須。`IHW` は\*\*強度（covariate）\*\*を使って検出力を上げる。
-**スキル**：`p.adjust("BH")`, `IHW::ihw`。
-**関数**：`p.adjust`, `ihw`
+**概念**：多数同時検定では**FDR制御**が必須。`IHW` は*強度（covariate）*を用いて検出力を高められる。
+**スキル**：`p.adjust("BH")`、（任意で）`IHW::ihw`。
+**関数**：`p.adjust`, `IHW::ihw`（任意）
 
-```r
+```{r}
 # ---- A5_FDR ----
-res <- tibble(p = tt$P.Value, Amean = tt$AveExpr)
-res$padj_BH  <- p.adjust(res$p, "BH")
-res$padj_IHW <- ihw(pvalues = res$p, covariates = res$Amean, alpha = 0.05) |> slot("adj_pvalues")
-table(BH = res$padj_BH < 0.05, IHW = res$padj_IHW < 0.05)
+res <- data.frame(p = tt$P.Value, Amean = tt$AveExpr)
+res$padj_BH <- p.adjust(res$p, method = "BH")
+
+# IHW があれば併記（無ければ BH のみ）
+if (requireNamespace("IHW", quietly = TRUE)) {
+  ihw_fit <- IHW::ihw(pvalues = res$p, covariates = res$Amean, alpha = 0.05)
+  res$padj_IHW <- IHW::adj_pvalues(ihw_fit)
+  print(table(BH = res$padj_BH < 0.05, IHW = res$padj_IHW < 0.05))
+} else {
+  message("IHW が見つかりませんでした（BH のみ計算）。")
+  print(table(BH = res$padj_BH < 0.05))
+}
 ```
 
 
-## A6. 効果量で線を引く：treat（|LFC|≥τ）
+## A6. 効果量で線を引く：treat（|LFC| ≥ τ）
 
-**概念**：統計的有意だけでなく**実質的効果量**で選別（$|\log_2FC|\ge\tau$）。
+**概念**：統計的“有意”に加え、**実質的効果量**（例：$|\log_2FC|\ge \tau$）で結果を選別する。
 **スキル**：`treat` と `topTreat`。
 **関数**：`treat`, `topTreat`
 
-```r
+```{r}
 # ---- A6_treat ----
-fit_t <- treat(fit, coef = "groupB", lfc = 1)  # |log2FC| >= 1 を仮説とする検定
-tt_t  <- topTreat(fit_t, number = Inf)
+# 1) 係数名 → 係数番号（安全に取得）
+coef_name  <- grep("^group", colnames(fit$coefficients), value = TRUE)
+coef_index <- match(coef_name, colnames(fit$coefficients))
+
+# 2) 効果量閾値付きの検定（|log2FC| >= 1）
+fit_t <- treat(fit, lfc = 1)             # coef は渡さない
+
+# 3) 指定係数で結果を取り出す
+tt_t  <- topTreat(fit_t, coef = coef_index, number = Inf)
 head(tt_t)
-```
-
-
-# B. 連続強度系（プロテオーム/メタボローム 等）ルート
-
-## B1. 設計とデータの最小準備（ログ強度）
-
-**概念**：比・強度は**連続量**。**バッチやラン順**を設計に入れる。
-**スキル**：`model.matrix(~ batch + group)`、ログ変換とセンタリング。
-**関数**：`lmFit`, `eBayes`
-
-```r
-# ---- B1_simulate_intensity ----
-p <- 3000; nA <- 4; nB <- 4
-group <- factor(c(rep("A", nA), rep("B", nB)))
-batch <- factor(rep(c("set1","set2"), each = (nA+nB)/2))
-
-base <- rnorm(p, 26, 1.2)
-delta <- rep(0, p); de <- sample.int(p, 250); delta[de] <- rnorm(250, 0.6, 0.15)*sample(c(-1,1),250,TRUE)
-X  <- base + tcrossprod(delta, as.numeric(group=="B")) + matrix(rnorm(p*(nA+nB),0,0.3), p)
-X  <- sweep(X, 2, apply(X, 2, median), "-")  # 列中央値でセンタリング（簡便）
-design <- model.matrix(~ batch + group)
-fit <- lmFit(X, design) |> eBayes(robust = TRUE)
-tt  <- topTable(fit, coef = "groupB", number = Inf)
-```
-
-## B2. 平均–分散依存：limma-trend/品質重み
-
-**概念**：低強度で相対誤差↑ → **trend**や**品質重み**で補正。
-**スキル**：`lmFit(..., trend=TRUE)` または `voomWithQualityWeights`。
-**関数**：`voomWithQualityWeights`（代替）
-
-```r
-# ---- B2_trend (optional) ----
-# 例：品質重み（サンプルごとのばらつき差を吸収）
-vw <- voomWithQualityWeights(X, design = design, plot = FALSE)
-fit_w <- lmFit(vw, design) |> eBayes(robust = TRUE)
-tt_w  <- topTable(fit_w, coef = "groupB", number = Inf)
-```
-
-
-## B3. 多重検定と効果量閾値
-
-```r
-# ---- B3_FDR_treat ----
-res <- tibble(p = tt$P.Value, padj = p.adjust(tt$P.Value, "BH"),
-              logFC = tt$logFC, A = tt$AveExpr)
-fit_t <- treat(fit, coef = "groupB", lfc = 0.5)
-tt_t  <- topTreat(fit_t, number = Inf)
-```
-
-
-## B4. （参考）QCベース補正・バッチの扱い
-
-**原則**：**比較のための補正は設計で行う**（`~ batch + group`）。
-**注意**：`removeBatchEffect` や ComBat は**可視化**や**下流解析の前処理**に限定し、**推定・検定は生データ + 設計で**。
-
-```r
-# ---- B4_visual_removeBatchEffect (viz only) ----
-X_adj <- removeBatchEffect(X, batch = batch, design = model.matrix(~ group))
-pheatmap(cor(X_adj), main = "Correlation after batch visual removal")
-```
-
-# C. まとめ：5課題に対する“実装の地図”
-
-| 課題         | 代表的な実装（R）                                                               | 診断・確認                                |
-| ---------- | ----------------------------------------------------------------------- | ------------------------------------ |
-| ① 多重検定     | `p.adjust("BH")`, `IHW::ihw`, （多コントラストは `stageR`）                       | p値ヒスト、ヒット数の合理性（期待値0.05m vs 実測）       |
-| ② 分散不安定    | `eBayes(robust=TRUE)`, DESeq2の分散縮約、`glmQLFit`（edgeR）                    | 分散分布（前/後）、独立実験間の安定性（Top-K Jaccard）   |
-| ③ 平均–分散依存  | カウント：`voom`/`glmQLFit`（NB）／ 連続強度：`voomWithQualityWeights`/`trend`       | MA/MDプロット、p値ヒストの校正（0近傍の過剰がないか）       |
-| ④ 合成制約・正規化 | カウント：`calcNormFactors(TMM)`、連続強度：列中央値/quantile、QC-LOESS（別章）             | ライブラリサイズ・強度分布の整合、ナイーブtでの偽陽性膨張の消失     |
-| ⑤ 交絡・バッチ   | `model.matrix(~ batch + group)`、必要に応じ SVA/RUV、（可視化に）`removeBatchEffect` | 設計の階数（rank）、係数の推定可能性、PCAでの群/バッチ分離の整合 |
-
----
-
-## 付録：最小出力テーブルと保存
-
-```r
-# ---- export_common ----
-out_counts <- tt %>% rownames_to_column("feature_id") %>%
-  transmute(feature_id, logFC, AveExpr, P.Value, padj = p.adjust(P.Value,"BH"))
-write.csv(out_counts, "counts_workflow_results.csv", row.names = FALSE)
-
-out_int <- (if (exists("tt_w")) tt_w else tt) %>% rownames_to_column("feature_id") %>%
-  transmute(feature_id, logFC, AveExpr, P.Value, padj = p.adjust(P.Value,"BH"))
-write.csv(out_int, "intensity_workflow_results.csv", row.names = FALSE)
 ```
 
 
@@ -881,296 +976,539 @@ write.csv(tbl_out, file = "airway_deseq2_dex_shrunk.csv", row.names = FALSE)
   * 診断: `vst`, `plotPCA`, `plotMA`, `mcols`（Cook）
   * 出力: `arrange`, `write.csv`
   
-  
----
 
+# 付録
 
-# プロテオーム（LFQ, ラベルフリー）— MNAR 欠測を含む連続強度
-
-> **全体ワークフロー**
-> デザイン定義 → ログ変換・正規化 → 欠測の点検とフィルタ → （A）limma+robust EB → （B）proDA（MNAR） → 診断 → 出力
-
-## 0) セットアップ
-
-**原理**: 依存関係の明示と再現可能性。
-**スキル**: 条件付きインストール。
-**関数**: `BiocManager::install`, `library`
-
-```{r}
-# ---- setup_lfq ----
-set.seed(123)
-needs <- c("limma","proDA","ggplot2","pheatmap","dplyr","tibble")
-to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)]
-if (length(to_install) > 0) {
-  if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager")
-  bioc <- intersect(to_install, c("limma","proDA"))
-  cran <- setdiff(to_install, bioc)
-  if (length(bioc)) BiocManager::install(bioc, ask=FALSE, update=FALSE)
-  if (length(cran)) install.packages(cran)
-}
-suppressPackageStartupMessages({
-  library(limma); library(proDA); library(ggplot2)
-  library(pheatmap); library(dplyr); library(tibble)
-})
-```
-
-## 1) データ生成（MNAR 欠測つきの log2 強度）
-
-**原理**: \*\*低強度ほど欠測しやすい（MNAR/左打切り）\*\*という MS の性質を再現。
-**スキル**: 行列操作、関数化。
-**関数**: base R
-
-```{r}
-# ---- simulate_lfq ----
-simulate_lfq <- function(p=3000, nA=4, nB=4, de=300,
-                         mu=25, sd=1.5,  # log2 強度の中心とばらつき
-                         effect=log2(1.5), effect_sd=0.2,  # A vs B の真の効果（差分）
-                         drop_k=1.2, drop_loc=24.5, # 欠測ロジスティック: 低強度ほど欠測
-                         noise_sd=0.4) {
-  base <- rnorm(p, mu, sd)
-  delta <- rep(0, p); idx <- sample.int(p, de); 
-  delta[idx] <- rnorm(de, effect, effect_sd) * sample(c(-1,1), de, TRUE)
-
-  make_group <- function(isB=FALSE) {
-    M <- matrix(rnorm(p * (nA + nB), 0, noise_sd), nrow=p)
-    mean_mat <- matrix(base + if(isB) delta else 0, nrow=p, ncol=(nA+nB))
-    Y <- mean_mat + M
-    Y
-  }
-  Y <- cbind(make_group(FALSE)[,1:nA], make_group(TRUE)[,(nA+1):(nA+nB)])
-  colnames(Y) <- c(paste0("A",1:nA), paste0("B",1:nB))
-  group <- factor(c(rep("A",nA), rep("B",nB)))
-
-  # 欠測（低強度ほど欠落しやすい）
-  prob_drop <- 1/(1+exp(-(drop_loc - Y)*drop_k))  # 大きいほど欠測
-  miss_mask <- matrix(runif(length(Y)) < prob_drop, nrow=p)
-  Y[miss_mask] <- NA_real_
-
-  list(Y=Y, group=group, idx_de=idx)
-}
-
-lfq <- simulate_lfq()
-Y <- lfq$Y; group <- lfq$group
-dim(Y); table(group)
-```
-
-## 2) 変換・正規化・欠測点検
-
-**原理**: **サンプル内スケール**の揃え／欠測機構の把握。
-**スキル**: 列正規化、箱ひげ・欠測率の可視化。
-**関数**: `scale`, `ggplot2`
-
-```{r}
-# ---- normalize_qc ----
-# 列ごとの中央値でセンタリング（ログ空間の簡易正規化）
-med <- apply(Y, 2, median, na.rm=TRUE)
-Y.norm <- sweep(Y, 2, med, "-")
-
-# 欠測率の点検
-miss_rate_feature <- rowMeans(is.na(Y.norm))
-miss_rate_sample  <- colMeans(is.na(Y.norm))
-
-qplot(miss_rate_sample, bins=10) + ggtitle("欠測率（サンプル）")
-qplot(miss_rate_feature, bins=30) + ggtitle("欠測率（特徴）")
-
-# サンプル距離（NAはペアごと完全ケースで計算）
-dist_complete <- function(M) {
-  S <- as.matrix(dist(t(replace(M, is.na(M), median(M, na.rm=TRUE)))))
-  S
-}
-pheatmap(dist_complete(Y.norm), main="Sample distance (median-imputed for viz)")
-```
-
-## 3A) limma + robust eBayes（欠測は“使えるところだけ”で推定）
-
-**原理**: **連続強度 × 欠測あり**でも、各特徴で利用可能な観測のみで線形モデルを当て、**empirical Bayes**で分散縮約。
-**スキル**: 行フィルタ（各群で最低観測数）、`lmFit`→`eBayes(robust=TRUE)`。
-**関数**: `lmFit`, `eBayes`, `topTable`
-
-```{r}
-# ---- limma_lfq ----
-# 各群で >= 2 観測がある特徴だけを採用（例）
-keep <- rowSums(!is.na(Y.norm[, group=="A"])) >= 2 &
-        rowSums(!is.na(Y.norm[, group=="B"])) >= 2
-Yk <- Y.norm[keep, , drop=FALSE]
-
-design <- model.matrix(~ group)
-fit <- lmFit(Yk, design)
-fit <- eBayes(fit, robust = TRUE)  # 外れ値に頑健
-
-tt_limma <- topTable(fit, coef = grep("^groupB", colnames(fit$coefficients)), number = Inf, sort.by = "P")
-head(tt_limma)
-sum(p.adjust(tt_limma$P.Value, "BH") < 0.05)  # BH<0.05 の数
-```
-
-## 3B) proDA（MNAR ドロップアウトを明示的にモデル化）
-
-**原理**: **欠測確率 \~ 強度**を同時に推定し、**MNAR**を考慮して群差を検定。
-**スキル**: `proDA()` の入力（行=タンパク質×列=サンプル）、`lfcShrink` 相当の出力解釈。
-**関数**: `proDA`, `test_diff`
-
-```{r}
-# ---- proDA_lfq ----
-group_df <- data.frame(group = group)
-fit_pro <- proDA(Y.norm, design = ~ group, col_data = group_df)
-res_pro <- test_diff(fit_pro, "groupB") %>% arrange(pval)
-head(res_pro)
-sum(p.adjust(res_pro$pval, "BH") < 0.05)
-```
-
-## 4) 診断（p値ヒスト・MA・ヒットの安定性）
-
-**原理**: **校正・検出力・安定性**を可視化。
-**スキル**: ヒスト、MA、集合操作。
-**関数**: `ggplot2`, base
-
-```{r}
-# ---- diag_lfq ----
-p1 <- ggplot(tibble(p = tt_limma$P.Value), aes(p)) +
-  geom_histogram(bins=40, boundary=0) + ggtitle("limma robust EB: p-value")
-
-p2 <- ggplot(tibble(p = res_pro$pval), aes(p)) +
-  geom_histogram(bins=40, boundary=0) + ggtitle("proDA (MNAR): p-value")
-
-p1; p2
-
-# MA（limma）
-A <- rowMeans(Yk, na.rm=TRUE)
-M <- fit$coefficients[, grep("^groupB", colnames(fit$coefficients))]
-qplot(A, M) + geom_hline(yintercept=0, linetype=2) + ggtitle("MA (limma robust EB)")
-```
-
-## 5) 出力
-
-**原理**: 再利用可能な表として保存。
-**スキル**: `dplyr` 整形、CSV 書き出し。
-**関数**: `arrange`, `write.csv`
-
-```{r}
-# ---- export_lfq ----
-out_limma <- tt_limma %>%
-  rownames_to_column("protein_id") %>%
-  transmute(protein_id, logFC = logFC, AveExpr = AveExpr, P.Value, adj.P.Val = p.adjust(P.Value, "BH"))
-write.csv(out_limma, "proteome_LFQ_limma.csv", row.names = FALSE)
-
-out_proDA <- res_pro %>%
-  transmute(protein_id = name, logFC = diff, se = se, pval, padj = p.adjust(pval, "BH"))
-write.csv(out_proDA, "proteome_LFQ_proDA.csv", row.names = FALSE)
-```
-
-> **補足（どちらを使う？）**
-> 欠測が多く **MNAR が支配的**なときは **proDA** が一貫して有利。欠測が少なく外れが気になるときは **limma + robust EB** でも十分に安定します。実データでは**両方走らせ**、ヒット集合の重なりと安定性（Top-K Jaccard）を見るのがお勧めです。
-
-
-# プロテオーム（TMT, isobaric）— 参照チャネル×線形モデル
-
-> **全体ワークフロー**
-> 参照チャネル比の計算 → セット効果の調整（batch）→ 群効果の検定 → 診断 → 出力
-
-## 0) データ生成（TMT セット + 参照チャネル）
-
-**原理**: **各ラン（set）ごと**に **参照チャネル**で比を取り、\*\*set 効果（バッチ）\*\*を線形モデルで調整。
-**スキル**: 比の計算、`model.matrix(~ set + condition)`。
-**関数**: base, `lmFit`, `eBayes`
-
-```{r}
-# ---- simulate_tmt ----
-set.seed(456)
-simulate_tmt <- function(p=3000, sets=3, chans=6, ref="R", de=300,
-                         mu=26, sd=1.0, effect=log2(1.4), effect_sd=0.15,
-                         set_shift_sd=0.3, noise_sd=0.25) {
-  # セット×チャンネル：例）1参照 + 5サンプル（A/B混在）
-  # チャンネル名例：R, S1..S5
-  chan_names <- c(ref, paste0("S",1:(chans-1)))
-  cond <- rep(c("A","B"), length.out = (chans-1))
-  cond_all <- rep(cond, times = sets)
-  set_id <- rep(paste0("set",1:sets), each = chans-1)
-
-  base <- rnorm(p, mu, sd)
-  delta <- rep(0,p); idx <- sample.int(p, de)
-  delta[idx] <- rnorm(de, effect, effect_sd) * sample(c(-1,1), de, TRUE)
-
-  # 各 set に参照チャネル（R）あり：比 = log2(sample) - log2(ref)
-  make_set <- function() {
-    ref_int <- base + rnorm(p, 0, noise_sd)
-    mat <- sapply(cond, function(cc){
-      base + (if(cc=="B") delta else 0) + rnorm(p, 0, noise_sd)
-    })
-    # set シフト（比を取る前に加わる→比で相殺されるはず）
-    shift <- rnorm(1, 0, set_shift_sd)
-    log2ratio <- sweep(mat + shift, 1, ref_int + shift, "-")
-    log2ratio
-  }
-  rat <- do.call(cbind, replicate(sets, make_set(), simplify = FALSE))
-  colnames(rat) <- paste0(set_id, "_", rep(chan_names[-1], times=sets))
-  data.frame(
-    expr = I(rat),
-    condition = factor(cond_all),
-    set = factor(set_id)
-  )
-}
-
-tmt <- simulate_tmt()
-X <- as.matrix(tmt$expr); condition <- tmt$condition; set <- tmt$set
-dim(X); table(condition, set)
-```
-
-## 1) セット調整つき線形モデル（limma）
-
-**原理**: \*\*比データ（log2 ratio）\*\*に対して **`~ set + condition`** を当てる。
-**スキル**: デザインの構築、`lmFit`→`eBayes`→`topTable`。
-**関数**: `model.matrix`, `lmFit`, `eBayes`, `topTable`
-
-```{r}
-# ---- limma_tmt ----
-design <- model.matrix(~ set + condition)
-fit <- lmFit(X, design)
-fit <- eBayes(fit)
-
-coef_name <- grep("^condition", colnames(fit$coefficients), value=TRUE)
-tt_tmt <- topTable(fit, coef = coef_name, number = Inf, sort.by = "P")
-head(tt_tmt)
-sum(p.adjust(tt_tmt$P.Value, "BH") < 0.05)
-```
-
-## 2) 診断（p値ヒスト・MA）
-
-**原理**: **set 効果の取りきり**／**比の校正**の確認。
-**スキル**: 可視化。
-**関数**: `ggplot2`
-
-```{r}
-# ---- diag_tmt ----
-ggplot(tibble(p = tt_tmt$P.Value), aes(p)) +
-  geom_histogram(bins=40, boundary=0) + ggtitle("TMT limma: p-value")
-
-A <- rowMeans(X)
-M <- fit$coefficients[, coef_name]
-qplot(A, M) + geom_hline(yintercept=0, linetype=2) + ggtitle("MA (TMT, set-adjusted)")
-```
-
-## 3) 出力
-
-```{r}
-# ---- export_tmt ----
-out_tmt <- tt_tmt %>%
-  rownames_to_column("protein_id") %>%
-  transmute(protein_id, logFC, AveExpr, P.Value, adj.P.Val = p.adjust(P.Value, "BH"))
-write.csv(out_tmt, "proteome_TMT_limma.csv", row.names = FALSE)
-```
-
-> **補足（実務）**
-> 実データでは **MSstatsTMT**（参照チャネル設計・比圧縮補正）も選択肢。セット間を跨ぐ比較では**bridge/参照チャネル**を一貫配置し、`~ set + condition` で**統計的に補正**します。
 
 ---
 
-## 付録：RNA-seq との“原理マッピング”
+## B. 連続強度系（プロテオーム/メタボローム 等）ルート
 
-| 原理    | RNA-seq（DESeq2）       | プロテオーム LFQ                       | プロテオーム TMT                   |
-| ----- | --------------------- | -------------------------------- | ---------------------------- |
-| 平均–分散 | NB-GLM / voom         | 強度依存分散 → limma-trend / robust EB | 比データ（log2比）で等分散に近づく          |
-| 欠測    | 低カウント独立フィルタ           | **MNAR/LoD** → **proDA** 推奨      | 参照比なので欠測は相対的に少なめ             |
-| 正規化   | サイズ因子（RLE/TMM）        | 列中央値/quantile + QC補正（別章）         | 参照チャネル比 + セット補正              |
-| 交絡    | `~ batch + condition` | ラン順・装置・day → 共変量                 | `~ set + condition`（set=バッチ） |
-| 分散縮約  | eBayes/LFC shrink     | eBayes(robust)                   | eBayes                       |
+## B1. 設計とデータの最小準備（ログ強度）
+
+**概念**：比・強度は**連続量**。**バッチやラン順**を設計に入れる。
+**スキル**：`model.matrix(~ batch + group)`、ログ変換とセンタリング。
+**関数**：`model.matrix`
+
+```r
+# ---- B1_simulate_intensity ----
+set.seed(1)
+library(limma)
+
+p <- 3000; nA <- 4; nB <- 4
+group <- factor(rep(c("A","B"), each = 4))
+batch <- factor(rep(c("set1","set2"), times = 4))  # 交互配置で完全交絡を回避
+
+# 期待値と群効果（±方向を混在）
+base  <- rnorm(p, 26, 1.2)
+delta <- rep(0, p); de <- sample.int(p, 250)
+delta[de] <- rnorm(250, 0.6, 0.15) * sample(c(-1,1), 250, TRUE)
+
+# 行列生成（列=サンプル）
+X <- base + tcrossprod(delta, as.numeric(group=="B")) + matrix(rnorm(p*(nA+nB),0,0.3), p)
+X <- sweep(X, 2, apply(X, 2, median), "-")  # 列中央値センタリング
+
+# 設計（必ず data= を指定）
+design <- model.matrix(~ batch + group, data = data.frame(batch, group))
+```
+
+
+
+## B2. 平均–分散依存：limma-trend / 品質重み
+
+**概念**：低強度で相対誤差↑ → **trend**や**品質重み**で補正。
+**スキル**：`arrayWeights`（品質重み）や `eBayes(trend=TRUE)`（トレンド）。
+**関数**：`arrayWeights`, `lmFit`, `eBayes`, `topTable`
+
+```r
+# ---- B2_trend (optional, arrayWeights推奨) ----
+aw  <- arrayWeights(X, design)                            # サンプル品質重み
+fit <- eBayes(lmFit(X, design, weights = aw), robust = TRUE, trend = TRUE)
+
+coef_name <- grep("^group", colnames(fit$coefficients), value = TRUE)  # 例："groupB"
+tt        <- topTable(fit, coef = coef_name, number = Inf)
+```
+
+
+## B3. 多重検定と効果量閾値
+
+```{r}
+# ---- B3_FDR_treat ----
+res <- data.frame(p = tt$P.Value,
+                  padj = p.adjust(tt$P.Value, "BH"),
+                  logFC = tt$logFC, A = tt$AveExpr)
+
+# 効果量閾値付き検定（|log2FC| ≥ 0.5）
+coef_index <- match(coef_name, colnames(fit$coefficients))
+fit_t <- treat(fit, lfc = 0.5)                  # coef はここでは指定しない
+tt_t  <- topTreat(fit_t, coef = coef_index, number = Inf)
+
+head(tt_t)
+sum(p.adjust(tt_t$P.Value, "BH") < 0.05)
+```
+
+## B4. （参考）QCベース補正・バッチの扱い
+
+**原則**：**比較のための補正は設計で行う**（`~ batch + group`）。
+**注意**：`removeBatchEffect` や ComBat は**可視化**や**下流解析の前処理**に限定し、**推定・検定は生データ + 設計で**。
+
+```{r}
+# ---- B4_visual_removeBatchEffect (viz only) ----
+library(pheatmap)
+X_adj <- removeBatchEffect(X, batch = batch, design = model.matrix(~ group))
+pheatmap(cor(X_adj), main = "Correlation after batch visual removal")
+```
+
+# C. まとめ：5課題に対する“実装の地図”
+
+| 課題         | 代表的な実装（R）                                                               | 診断・確認                                |
+| ---------- | ----------------------------------------------------------------------- | ------------------------------------ |
+| ① 多重検定     | `p.adjust("BH")`, `IHW::ihw`, （多コントラストは `stageR`）                       | p値ヒスト、ヒット数の合理性（期待値0.05m vs 実測）       |
+| ② 分散不安定    | `eBayes(robust=TRUE)`, DESeq2の分散縮約、`glmQLFit`（edgeR）                    | 分散分布（前/後）、独立実験間の安定性（Top-K Jaccard）   |
+| ③ 平均–分散依存  | カウント：`voom`/`glmQLFit`（NB）／ 連続強度：`voomWithQualityWeights`/`trend`       | MA/MDプロット、p値ヒストの校正（0近傍の過剰がないか）       |
+| ④ 合成制約・正規化 | カウント：`calcNormFactors(TMM)`、連続強度：列中央値/quantile、QC-LOESS（別章）             | ライブラリサイズ・強度分布の整合、ナイーブtでの偽陽性膨張の消失     |
+| ⑤ 交絡・バッチ   | `model.matrix(~ batch + group)`、必要に応じ SVA/RUV、（可視化に）`removeBatchEffect` | 設計の階数（rank）、係数の推定可能性、PCAでの群/バッチ分離の整合 |
+
+
+## 付録：最小出力テーブルと保存
+
+```r
+# ---- export_common ----
+out_counts <- tt %>% rownames_to_column("feature_id") %>%
+  transmute(feature_id, logFC, AveExpr, P.Value, padj = p.adjust(P.Value,"BH"))
+write.csv(out_counts, "counts_workflow_results.csv", row.names = FALSE)
+
+out_int <- (if (exists("tt_w")) tt_w else tt) %>% rownames_to_column("feature_id") %>%
+  transmute(feature_id, logFC, AveExpr, P.Value, padj = p.adjust(P.Value,"BH"))
+write.csv(out_int, "intensity_workflow_results.csv", row.names = FALSE)
+```
+
+
+# シングルセルの場合も同じ枠組み
+
+## A1. 設計とデータの最小準備（細胞×遺伝子カウント）
+
+**概念**：細胞を独立観測とし、各細胞に **group（A/B）・donor・batch** を付与。
+**スキル**：疎な NB カウントを生成して Seurat オブジェクトへ。
+
+```r
+# ---- A1_seurat_simulate ----
+set.seed(42)
+library(Seurat)
+
+G <- 2000
+donor_per_grp <- 3
+cells_per_donor <- 150
+groups <- c("A","B")
+
+# 細胞メタ
+donor <- unlist(lapply(groups, function(g)
+  rep(paste0(g, "_d", seq_len(donor_per_grp)), each = cells_per_donor)))
+group  <- sub("_.*$", "", donor)
+batch  <- sample(c("b1","b2"), length(donor), replace = TRUE)
+
+# 遺伝子平均・群効果（±）
+mu_g   <- rgamma(G, shape=1.5, rate=0.15)
+de_idx <- sample.int(G, 250)
+logFC  <- rnorm(length(de_idx), log(1.6), 0.25) * sample(c(-1,1), length(de_idx), TRUE)
+fc_g   <- rep(1, G); fc_g[de_idx] <- exp(logFC)
+
+# 細胞スケール（合成性）
+lib_sf <- rgamma(length(donor), shape=8, rate=8)
+
+# NB カウント
+disp <- 0.15; size <- 1/disp
+Mu <- outer(mu_g, lib_sf) * (matrix(as.numeric(group=="B"), nrow=G, ncol=length(donor), byrow=TRUE)*(fc_g-1)+1)
+counts <- matrix(rnbinom(G*length(donor), mu=as.vector(Mu), size=size), nrow=G)
+rownames(counts) <- paste0("gene", seq_len(G))
+colnames(counts) <- paste0("cell", seq_len(ncol(counts)))
+
+# Seurat オブジェクト
+seu <- CreateSeuratObject(counts, meta.data = data.frame(group=group, donor=donor, batch=batch,
+                                                         row.names = colnames(counts)))
+```
+
+
+## A2. 正規化：**SCTransform** と CDR の導入
+
+**概念**：**SCTransform**でサイズ因子＋分散安定化（正規化＆バリアンス・スタビライズ）を一括。
+**スキル**：`SCTransform()`（`vst.flavor="v2"` が既定）、**CDR**（検出遺伝子数の z-score）を共変量に。
+
+```r
+# ---- A2_sctransform_cdr ----
+# CDR（cellular detection rate）
+seu$CDR <- scale(Matrix::colSums(seu@assays$RNA@counts > 0))[,1]
+
+# SCTransform（CDRとバッチを共変量として回帰で調整）
+seu <- SCTransform(seu, vars.to.regress = c("CDR", "batch"), verbose = FALSE)
+```
+
+**原理（ひとこと）**
+
+* **SCTransform** は **正規化 + ログ変換の代替**で、**NB近似の残差**を用いて**平均–分散依存を除去**。
+* `vars.to.regress` で **CDR/バッチ**を**線形項**として除去し、**技術差**を緩和。
+
+
+## A3. 平均–分散・ゼロ過多への対応：**MAST（hurdle）** を Seurat から
+
+**概念**：`FindMarkers(test.use="MAST")` で **ハードルモデル**（検出有無＋連続部）を実行。
+**スキル**：`Idents(seu)` に群、`latent.vars` に **CDR/バッチ/UMI量**等を渡して固定効果として調整。
+
+```r
+# ---- A3_seurat_mast_fit ----
+Idents(seu) <- factor(seu$group, levels=c("A","B"))         # 係数は "groupB" 相当
+markers <- FindMarkers(seu,
+                       ident.1 = "B", ident.2 = "A",
+                       test.use = "MAST",
+                       latent.vars = c("CDR","batch"),
+                       verbose = FALSE)
+head(markers)
+```
+
+**原理（ひとこと）**
+
+* MAST は **検出（0/1）** と **検出時の連続量**を統合して群差を検定 → **ゼロ過多＋非等分散**に強い。
+* `latent.vars` は **固定効果**（バッチ・CDR 等）として調整。※\*\*ランダム効果（例：1|donor）\*\*は Seurat 経由では未対応（必要なら MAST を直接 + lme4 で）。
+
+---
+
+## A4. 診断：p値ヒストと効果量の把握
+
+**概念**：校正の様子（p 値ヒスト）と、**効果量**（`avg_log2FC`）を確認。
+
+```r
+# ---- A4_seurat_diag ----
+hist(markers$p_val, breaks = 40, main = "p-value histogram (MAST via Seurat)",
+     xlab = "p-value")
+summary(markers$avg_log2FC)
+```
+
+---
+
+## A5. 多重検定（BH）は Seurat が付与
+
+**概念**：Seurat は `p_val_adj` として **BH** を返す。必要に応じて再計算も可。
+
+```r
+# ---- A5_seurat_fdr ----
+table(adj_P_lt_0.05 = markers$p_val_adj < 0.05)
+```
+
+---
+
+## A6. 効果量しきい値（|log2FC| ≥ τ）の併用
+
+**概念**：統計的“有意”かつ**実質的変化幅**で選別。
+
+```r
+# ---- A6_seurat_threshold ----
+tau <- 1   # 2倍相当
+hits <- subset(markers, p_val_adj < 0.05 & abs(avg_log2FC) >= tau)
+head(hits[order(hits$p_val_adj), ], 10)
+```
+
+## 注意点
+
+* **ランダム効果（donor）**：Seurat 経由の MAST では **固定効果のみ**。**被験者のランダム効果**が必要なら
+
+  1. **pseudobulk**（推奨；A1–A6 共通フローでNB-GLMへ）、または
+  2. **MAST を直接呼び出して `zlm(~ group + batch + CDR + (1|donor))`** を使う。
+* **共変量**：`vars.to.regress`（正規化側）と `latent.vars`（検定側）は**役割が異なる**。前者は前処理の回帰、後者は統計モデルの調整。重複指定は避け、**どちらで扱うかを決める**。
+* **フィルタ**：非常に低検出の遺伝子は**独立条件**で事前フィルタ（例：検出率 > 5%）すると安定。
+* **可視化**：UMAP/PCA は SCTransform 後の `seu[["SCT"]]` で実施（ここでは割愛）。
+
+このセットで、**A1–A6 の型を崩さず**に **Seurat + SCTransform** ベースの細胞単位 DE 解析が実施できる。
+
+
+<!-- --- -->
+
+
+<!-- # プロテオーム（LFQ, ラベルフリー）— MNAR 欠測を含む連続強度 -->
+
+<!-- > **全体ワークフロー** -->
+<!-- > デザイン定義 → ログ変換・正規化 → 欠測の点検とフィルタ → （A）limma+robust EB → （B）proDA（MNAR） → 診断 → 出力 -->
+
+<!-- ## 0) セットアップ -->
+
+<!-- **原理**: 依存関係の明示と再現可能性。 -->
+<!-- **スキル**: 条件付きインストール。 -->
+<!-- **関数**: `BiocManager::install`, `library` -->
+
+<!-- ```{r} -->
+<!-- # ---- setup_lfq ---- -->
+<!-- set.seed(123) -->
+<!-- needs <- c("limma","proDA","ggplot2","pheatmap","dplyr","tibble") -->
+<!-- to_install <- needs[!sapply(needs, requireNamespace, quietly = TRUE)] -->
+<!-- if (length(to_install) > 0) { -->
+<!--   if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager") -->
+<!--   bioc <- intersect(to_install, c("limma","proDA")) -->
+<!--   cran <- setdiff(to_install, bioc) -->
+<!--   if (length(bioc)) BiocManager::install(bioc, ask=FALSE, update=FALSE) -->
+<!--   if (length(cran)) install.packages(cran) -->
+<!-- } -->
+<!-- suppressPackageStartupMessages({ -->
+<!--   library(limma); library(proDA); library(ggplot2) -->
+<!--   library(pheatmap); library(dplyr); library(tibble) -->
+<!-- }) -->
+<!-- ``` -->
+
+<!-- ## 1) データ生成（MNAR 欠測つきの log2 強度） -->
+
+<!-- **原理**: *低強度ほど欠測しやすい（MNAR/左打切り）*という MS の性質を再現。 -->
+<!-- **スキル**: 行列操作、関数化。 -->
+<!-- **関数**: base R -->
+
+<!-- ```{r} -->
+<!-- # ---- simulate_lfq ---- -->
+<!-- simulate_lfq <- function(p=3000, nA=4, nB=4, de=300, -->
+<!--                          mu=25, sd=1.5,  # log2 強度の中心とばらつき -->
+<!--                          effect=log2(1.5), effect_sd=0.2,  # A vs B の真の効果（差分） -->
+<!--                          drop_k=1.2, drop_loc=24.5, # 欠測ロジスティック: 低強度ほど欠測 -->
+<!--                          noise_sd=0.4) { -->
+<!--   base <- rnorm(p, mu, sd) -->
+<!--   delta <- rep(0, p); idx <- sample.int(p, de);  -->
+<!--   delta[idx] <- rnorm(de, effect, effect_sd) * sample(c(-1,1), de, TRUE) -->
+
+<!--   make_group <- function(isB=FALSE) { -->
+<!--     M <- matrix(rnorm(p * (nA + nB), 0, noise_sd), nrow=p) -->
+<!--     mean_mat <- matrix(base + if(isB) delta else 0, nrow=p, ncol=(nA+nB)) -->
+<!--     Y <- mean_mat + M -->
+<!--     Y -->
+<!--   } -->
+<!--   Y <- cbind(make_group(FALSE)[,1:nA], make_group(TRUE)[,(nA+1):(nA+nB)]) -->
+<!--   colnames(Y) <- c(paste0("A",1:nA), paste0("B",1:nB)) -->
+<!--   group <- factor(c(rep("A",nA), rep("B",nB))) -->
+
+<!--   # 欠測（低強度ほど欠落しやすい） -->
+<!--   prob_drop <- 1/(1+exp(-(drop_loc - Y)*drop_k))  # 大きいほど欠測 -->
+<!--   miss_mask <- matrix(runif(length(Y)) < prob_drop, nrow=p) -->
+<!--   Y[miss_mask] <- NA_real_ -->
+
+<!--   list(Y=Y, group=group, idx_de=idx) -->
+<!-- } -->
+
+<!-- lfq <- simulate_lfq() -->
+<!-- Y <- lfq$Y; group <- lfq$group -->
+<!-- dim(Y); table(group) -->
+<!-- ``` -->
+
+<!-- ## 2) 変換・正規化・欠測点検 -->
+
+<!-- **原理**: **サンプル内スケール**の揃え／欠測機構の把握。 -->
+<!-- **スキル**: 列正規化、箱ひげ・欠測率の可視化。 -->
+<!-- **関数**: `scale`, `ggplot2` -->
+
+<!-- ```{r} -->
+<!-- # ---- normalize_qc ---- -->
+<!-- # 列ごとの中央値でセンタリング（ログ空間の簡易正規化） -->
+<!-- med <- apply(Y, 2, median, na.rm=TRUE) -->
+<!-- Y.norm <- sweep(Y, 2, med, "-") -->
+
+<!-- # 欠測率の点検 -->
+<!-- miss_rate_feature <- rowMeans(is.na(Y.norm)) -->
+<!-- miss_rate_sample  <- colMeans(is.na(Y.norm)) -->
+
+<!-- qplot(miss_rate_sample, bins=10) + ggtitle("欠測率（サンプル）") -->
+<!-- qplot(miss_rate_feature, bins=30) + ggtitle("欠測率（特徴）") -->
+
+<!-- # サンプル距離（NAはペアごと完全ケースで計算） -->
+<!-- dist_complete <- function(M) { -->
+<!--   S <- as.matrix(dist(t(replace(M, is.na(M), median(M, na.rm=TRUE))))) -->
+<!--   S -->
+<!-- } -->
+<!-- pheatmap(dist_complete(Y.norm), main="Sample distance (median-imputed for viz)") -->
+<!-- ``` -->
+
+<!-- ## 3A) limma + robust eBayes（欠測は“使えるところだけ”で推定） -->
+
+<!-- **原理**: **連続強度 × 欠測あり**でも、各特徴で利用可能な観測のみで線形モデルを当て、**empirical Bayes**で分散縮約。 -->
+<!-- **スキル**: 行フィルタ（各群で最低観測数）、`lmFit`→`eBayes(robust=TRUE)`。 -->
+<!-- **関数**: `lmFit`, `eBayes`, `topTable` -->
+
+<!-- ```{r} -->
+<!-- # ---- limma_lfq ---- -->
+<!-- # 各群で >= 2 観測がある特徴だけを採用（例） -->
+<!-- keep <- rowSums(!is.na(Y.norm[, group=="A"])) >= 2 & -->
+<!--         rowSums(!is.na(Y.norm[, group=="B"])) >= 2 -->
+<!-- Yk <- Y.norm[keep, , drop=FALSE] -->
+
+<!-- design <- model.matrix(~ group) -->
+<!-- fit <- lmFit(Yk, design) -->
+<!-- fit <- eBayes(fit, robust = TRUE)  # 外れ値に頑健 -->
+
+<!-- tt_limma <- topTable(fit, coef = grep("^groupB", colnames(fit$coefficients)), number = Inf, sort.by = "P") -->
+<!-- head(tt_limma) -->
+<!-- sum(p.adjust(tt_limma$P.Value, "BH") < 0.05)  # BH<0.05 の数 -->
+<!-- ``` -->
+
+<!-- ## 3B) proDA（MNAR ドロップアウトを明示的にモデル化） -->
+
+<!-- **原理**: **欠測確率 \~ 強度**を同時に推定し、**MNAR**を考慮して群差を検定。 -->
+<!-- **スキル**: `proDA()` の入力（行=タンパク質×列=サンプル）、`lfcShrink` 相当の出力解釈。 -->
+<!-- **関数**: `proDA`, `test_diff` -->
+
+<!-- ```{r} -->
+<!-- # ---- proDA_lfq ---- -->
+<!-- group_df <- data.frame(group = group) -->
+<!-- fit_pro <- proDA(Y.norm, design = ~ group, col_data = group_df) -->
+<!-- res_pro <- test_diff(fit_pro, "groupB") %>% arrange(pval) -->
+<!-- head(res_pro) -->
+<!-- sum(p.adjust(res_pro$pval, "BH") < 0.05) -->
+<!-- ``` -->
+
+<!-- ## 4) 診断（p値ヒスト・MA・ヒットの安定性） -->
+
+<!-- **原理**: **校正・検出力・安定性**を可視化。 -->
+<!-- **スキル**: ヒスト、MA、集合操作。 -->
+<!-- **関数**: `ggplot2`, base -->
+
+<!-- ```{r} -->
+<!-- # ---- diag_lfq ---- -->
+<!-- p1 <- ggplot(tibble(p = tt_limma$P.Value), aes(p)) + -->
+<!--   geom_histogram(bins=40, boundary=0) + ggtitle("limma robust EB: p-value") -->
+
+<!-- p2 <- ggplot(tibble(p = res_pro$pval), aes(p)) + -->
+<!--   geom_histogram(bins=40, boundary=0) + ggtitle("proDA (MNAR): p-value") -->
+
+<!-- p1; p2 -->
+
+<!-- # MA（limma） -->
+<!-- A <- rowMeans(Yk, na.rm=TRUE) -->
+<!-- M <- fit$coefficients[, grep("^groupB", colnames(fit$coefficients))] -->
+<!-- qplot(A, M) + geom_hline(yintercept=0, linetype=2) + ggtitle("MA (limma robust EB)") -->
+<!-- ``` -->
+
+<!-- ## 5) 出力 -->
+
+<!-- **原理**: 再利用可能な表として保存。 -->
+<!-- **スキル**: `dplyr` 整形、CSV 書き出し。 -->
+<!-- **関数**: `arrange`, `write.csv` -->
+
+<!-- ```{r} -->
+<!-- # ---- export_lfq ---- -->
+<!-- out_limma <- tt_limma %>% -->
+<!--   rownames_to_column("protein_id") %>% -->
+<!--   transmute(protein_id, logFC = logFC, AveExpr = AveExpr, P.Value, adj.P.Val = p.adjust(P.Value, "BH")) -->
+<!-- write.csv(out_limma, "proteome_LFQ_limma.csv", row.names = FALSE) -->
+
+<!-- out_proDA <- res_pro %>% -->
+<!--   transmute(protein_id = name, logFC = diff, se = se, pval, padj = p.adjust(pval, "BH")) -->
+<!-- write.csv(out_proDA, "proteome_LFQ_proDA.csv", row.names = FALSE) -->
+<!-- ``` -->
+
+<!-- > **補足（どちらを使う？）** -->
+<!-- > 欠測が多く **MNAR が支配的**なときは **proDA** が一貫して有利。欠測が少なく外れが気になるときは **limma + robust EB** でも十分に安定します。実データでは**両方走らせ**、ヒット集合の重なりと安定性（Top-K Jaccard）を見るのがお勧めです。 -->
+
+
+<!-- # プロテオーム（TMT, isobaric）— 参照チャネル×線形モデル -->
+
+<!-- > **全体ワークフロー** -->
+<!-- > 参照チャネル比の計算 → セット効果の調整（batch）→ 群効果の検定 → 診断 → 出力 -->
+
+<!-- ## 0) データ生成（TMT セット + 参照チャネル） -->
+
+<!-- **原理**: **各ラン（set）ごと**に **参照チャネル**で比を取り、*set 効果（バッチ）*を線形モデルで調整。 -->
+<!-- **スキル**: 比の計算、`model.matrix(~ set + condition)`。 -->
+<!-- **関数**: base, `lmFit`, `eBayes` -->
+
+<!-- ```{r} -->
+<!-- # ---- simulate_tmt ---- -->
+<!-- set.seed(456) -->
+<!-- simulate_tmt <- function(p=3000, sets=3, chans=6, ref="R", de=300, -->
+<!--                          mu=26, sd=1.0, effect=log2(1.4), effect_sd=0.15, -->
+<!--                          set_shift_sd=0.3, noise_sd=0.25) { -->
+<!--   # セット×チャンネル：例）1参照 + 5サンプル（A/B混在） -->
+<!--   # チャンネル名例：R, S1..S5 -->
+<!--   chan_names <- c(ref, paste0("S",1:(chans-1))) -->
+<!--   cond <- rep(c("A","B"), length.out = (chans-1)) -->
+<!--   cond_all <- rep(cond, times = sets) -->
+<!--   set_id <- rep(paste0("set",1:sets), each = chans-1) -->
+
+<!--   base <- rnorm(p, mu, sd) -->
+<!--   delta <- rep(0,p); idx <- sample.int(p, de) -->
+<!--   delta[idx] <- rnorm(de, effect, effect_sd) * sample(c(-1,1), de, TRUE) -->
+
+<!--   # 各 set に参照チャネル（R）あり：比 = log2(sample) - log2(ref) -->
+<!--   make_set <- function() { -->
+<!--     ref_int <- base + rnorm(p, 0, noise_sd) -->
+<!--     mat <- sapply(cond, function(cc){ -->
+<!--       base + (if(cc=="B") delta else 0) + rnorm(p, 0, noise_sd) -->
+<!--     }) -->
+<!--     # set シフト（比を取る前に加わる→比で相殺されるはず） -->
+<!--     shift <- rnorm(1, 0, set_shift_sd) -->
+<!--     log2ratio <- sweep(mat + shift, 1, ref_int + shift, "-") -->
+<!--     log2ratio -->
+<!--   } -->
+<!--   rat <- do.call(cbind, replicate(sets, make_set(), simplify = FALSE)) -->
+<!--   colnames(rat) <- paste0(set_id, "_", rep(chan_names[-1], times=sets)) -->
+<!--   data.frame( -->
+<!--     expr = I(rat), -->
+<!--     condition = factor(cond_all), -->
+<!--     set = factor(set_id) -->
+<!--   ) -->
+<!-- } -->
+
+<!-- tmt <- simulate_tmt() -->
+<!-- X <- as.matrix(tmt$expr); condition <- tmt$condition; set <- tmt$set -->
+<!-- dim(X); table(condition, set) -->
+<!-- ``` -->
+
+<!-- ## 1) セット調整つき線形モデル（limma） -->
+
+<!-- **原理**: *比データ（log2 ratio）*に対して **`~ set + condition`** を当てる。 -->
+<!-- **スキル**: デザインの構築、`lmFit`→`eBayes`→`topTable`。 -->
+<!-- **関数**: `model.matrix`, `lmFit`, `eBayes`, `topTable` -->
+
+<!-- ```{r} -->
+<!-- # ---- limma_tmt ---- -->
+<!-- design <- model.matrix(~ set + condition) -->
+<!-- fit <- lmFit(X, design) -->
+<!-- fit <- eBayes(fit) -->
+
+<!-- coef_name <- grep("^condition", colnames(fit$coefficients), value=TRUE) -->
+<!-- tt_tmt <- topTable(fit, coef = coef_name, number = Inf, sort.by = "P") -->
+<!-- head(tt_tmt) -->
+<!-- sum(p.adjust(tt_tmt$P.Value, "BH") < 0.05) -->
+<!-- ``` -->
+
+<!-- ## 2) 診断（p値ヒスト・MA） -->
+
+<!-- **原理**: **set 効果の取りきり**／**比の校正**の確認。 -->
+<!-- **スキル**: 可視化。 -->
+<!-- **関数**: `ggplot2` -->
+
+<!-- ```{r} -->
+<!-- # ---- diag_tmt ---- -->
+<!-- ggplot(tibble(p = tt_tmt$P.Value), aes(p)) + -->
+<!--   geom_histogram(bins=40, boundary=0) + ggtitle("TMT limma: p-value") -->
+
+<!-- A <- rowMeans(X) -->
+<!-- M <- fit$coefficients[, coef_name] -->
+<!-- qplot(A, M) + geom_hline(yintercept=0, linetype=2) + ggtitle("MA (TMT, set-adjusted)") -->
+<!-- ``` -->
+
+<!-- ## 3) 出力 -->
+
+<!-- ```{r} -->
+<!-- # ---- export_tmt ---- -->
+<!-- out_tmt <- tt_tmt %>% -->
+<!--   rownames_to_column("protein_id") %>% -->
+<!--   transmute(protein_id, logFC, AveExpr, P.Value, adj.P.Val = p.adjust(P.Value, "BH")) -->
+<!-- write.csv(out_tmt, "proteome_TMT_limma.csv", row.names = FALSE) -->
+<!-- ``` -->
+
+<!-- > **補足（実務）** -->
+<!-- > 実データでは **MSstatsTMT**（参照チャネル設計・比圧縮補正）も選択肢。セット間を跨ぐ比較では**bridge/参照チャネル**を一貫配置し、`~ set + condition` で**統計的に補正**します。 -->
+
+<!-- --- -->
+
+<!-- ## 付録：RNA-seq との“原理マッピング” -->
+
+<!-- | 原理    | RNA-seq（DESeq2）       | プロテオーム LFQ                       | プロテオーム TMT                   | -->
+<!-- | ----- | --------------------- | -------------------------------- | ---------------------------- | -->
+<!-- | 平均–分散 | NB-GLM / voom         | 強度依存分散 → limma-trend / robust EB | 比データ（log2比）で等分散に近づく          | -->
+<!-- | 欠測    | 低カウント独立フィルタ           | **MNAR/LoD** → **proDA** 推奨      | 参照比なので欠測は相対的に少なめ             | -->
+<!-- | 正規化   | サイズ因子（RLE/TMM）        | 列中央値/quantile + QC補正（別章）         | 参照チャネル比 + セット補正              | -->
+<!-- | 交絡    | `~ batch + condition` | ラン順・装置・day → 共変量                 | `~ set + condition`（set=バッチ） | -->
+<!-- | 分散縮約  | eBayes/LFC shrink     | eBayes(robust)                   | eBayes                       | -->
 
