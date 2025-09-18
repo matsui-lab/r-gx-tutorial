@@ -8,6 +8,7 @@ output:
     number_sections: true
     df_print: paged
 ---
+
 # 目的とゴール
 
 本資料では **RNA‑seq（airway）** データを題材に、遺伝子やタンパク質に付随する
